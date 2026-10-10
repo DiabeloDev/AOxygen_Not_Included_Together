@@ -117,11 +117,8 @@ namespace ONI_Together.Networking
             {
                 transfer.ChunkAcked[chunkIndex] = true;
                 transfer.LastActivity = System.DateTime.Now;
-
-                // TCP-like ACK processing - tolerant to out-of-order ACKs
                 DebugConsole.Log($"[TransferManager] ACK {chunkIndex} received (highest sequential before: {transfer.HighestAckReceived})");
 
-                // Always tries to advance HighestAckReceived based on confirmed contiguous chunks
                 while (transfer.HighestAckReceived + 1 < transfer.TotalChunks &&
                        transfer.ChunkAcked[transfer.HighestAckReceived + 1])
                 {
@@ -130,7 +127,6 @@ namespace ONI_Together.Networking
 
                 DebugConsole.Log($"[TransferManager] Updated highest sequential ACK: {transfer.HighestAckReceived}/{transfer.TotalChunks}");
 
-                // Check if transfer is complete
                 if (transfer.HighestAckReceived + 1 == transfer.TotalChunks)
                 {
                     DebugConsole.Log($"[TransferManager] ✅ Transfer {transferId} to {clientID} COMPLETE - all chunks ACKed");

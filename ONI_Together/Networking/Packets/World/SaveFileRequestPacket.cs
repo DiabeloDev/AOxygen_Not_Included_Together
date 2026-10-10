@@ -1,19 +1,13 @@
 using ONI_Together.DebugTools;
 using ONI_Together.Misc;
-using ONI_Together.Misc.World;
 using ONI_Together.Networking.Packets.Architecture;
-using ONI_Together.Networking.Packets.Core;
-using ONI_Together.Networking.States;
 using ONI_Together.Networking.Transport.Lan;
-using ONI_Together.Networking.Transport.Steamworks;
-using Steamworks;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using Shared.Profiling;
-using ONI_Together.Menus;
 
 namespace ONI_Together.Networking.Packets.World
 {
@@ -21,7 +15,6 @@ namespace ONI_Together.Networking.Packets.World
 	{
 		public ulong Requester;
 		public ulong SynchronizationId;
-		public ulong RetryRequestId;
 		private static readonly Dictionary<ulong, object> TransferRuns = new Dictionary<ulong, object>();
 
 		internal static string CreateTransferId(ulong synchronizationId) =>
@@ -37,7 +30,6 @@ namespace ONI_Together.Networking.Packets.World
 
 			writer.Write(Requester);
 			writer.Write(SynchronizationId);
-			writer.Write(RetryRequestId);
 		}
 
 		public void Deserialize(BinaryReader reader)
@@ -46,7 +38,6 @@ namespace ONI_Together.Networking.Packets.World
 
 			Requester = reader.ReadUInt64();
 			SynchronizationId = reader.ReadUInt64();
-			RetryRequestId = reader.ReadUInt64();
 		}
 
 		public void OnDispatched()
@@ -57,27 +48,7 @@ namespace ONI_Together.Networking.Packets.World
 				return;
 
 			DebugConsole.Log($"[Packets/SaveFileRequest] Received request from {Requester}");
-			if (!MultiplayerSession.ConnectedPlayers.TryGetValue(Requester, out MultiplayerPlayer player))
-			{
-				DebugConsole.LogWarning($"[Packets/SaveFileRequest] could not find player {Requester} in the session.");
-				return;
-			}
-
-			if (player.Connection == null || !player.ProtocolVerified)
-			{
-				DebugConsole.LogWarning(
-					$"[Packets/SaveFileRequest] ignored request from player {Requester} " +
-					$"with invalid connection or unverified protocol");
-				return;
-			}
-
-			if (RetryRequestId == 0)
-			{
-				DebugConsole.LogWarning($"[Packets/SaveFileRequest] Ignored zero retry ID from {Requester} for sync {SynchronizationId}.");
-				return;
-			}
-
-			ReadyManager.RetrySynchronizationTransfer(Requester, SynchronizationId, RetryRequestId, false);
+			ReadyManager.RetrySynchronizationTransfer(Requester, SynchronizationId, false);
 		}
 
 		public static void SendSaveFileToAll(byte[] snapshot, ulong synchronizationId)

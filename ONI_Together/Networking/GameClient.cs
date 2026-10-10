@@ -24,13 +24,7 @@ namespace ONI_Together.Networking
 		private static ClientState _state = ClientState.Disconnected;
 		public static ClientState State => _state;
 		public static ulong ActiveSynchronizationId { get; private set; }
-		private static ulong _lastSynchronizationId;
-		private static object _synchronizationContext = new object();
 		private static bool _loadSubmitted;
-		private static bool _worldLoadStarted;
-		private static ulong _nextRetryRequestId;
-		private static ulong _pendingRetryRequestId;
-		private static bool _pendingRetryForceGeneric;
 
 		internal static bool IsCurrentSynchronization(ulong synchronizationId) =>
 			MultiplayerSession.IsClient && _state == ClientState.LoadingWorld
@@ -39,27 +33,11 @@ namespace ONI_Together.Networking
 		internal static bool CanReceiveSynchronizationSave(ulong synchronizationId) =>
 			IsCurrentSynchronization(synchronizationId) && !_loadSubmitted;
 
-		internal static System.Func<bool> CaptureSynchronizationGuard(ulong synchronizationId)
-		{
-			object context = _synchronizationContext;
-			return () => ReferenceEquals(context, _synchronizationContext) && CanReceiveSynchronizationSave(synchronizationId);
-		}
-
 		internal static void ResetSynchronizationState()
 		{
 			ActiveSynchronizationId = 0;
-			_lastSynchronizationId = 0;
-			_synchronizationContext = new object();
 			_loadSubmitted = false;
-			_worldLoadStarted = false;
-			_pendingRetryRequestId = 0;
 			SaveChunkAssembler.Clear();
-		}
-
-		internal static void OnSynchronizationTransferProgress(ulong synchronizationId)
-		{
-			if (CanReceiveSynchronizationSave(synchronizationId))
-				_pendingRetryRequestId = 0;
 		}
 
 		internal static void RequestSynchronizationTransferRetry(ulong synchronizationId, bool forceGeneric = false)
@@ -69,18 +47,13 @@ namespace ONI_Together.Networking
 				DebugConsole.LogWarning($"[Synchronization] Ignored transfer retry for inactive/submitted sync {synchronizationId}.");
 				return;
 			}
-			if (_pendingRetryRequestId != 0 && (!forceGeneric || _pendingRetryForceGeneric))
-				return;
-			_pendingRetryRequestId = checked(++_nextRetryRequestId);
-			_pendingRetryForceGeneric = forceGeneric;
 
 			if (forceGeneric)
 			{
 				var packet = new TcpFallbackRequestPacket
 				{
 					Requester = MultiplayerSession.LocalUserID,
-					SynchronizationId = synchronizationId,
-					RetryRequestId = _pendingRetryRequestId
+					SynchronizationId = synchronizationId
 				};
 				PacketSender.SendToHost(packet);
 				return;
@@ -89,8 +62,7 @@ namespace ONI_Together.Networking
 			var normalRetryPacket = new SaveFileRequestPacket
 			{
 				Requester = MultiplayerSession.LocalUserID,
-				SynchronizationId = synchronizationId,
-				RetryRequestId = _pendingRetryRequestId
+				SynchronizationId = synchronizationId
 			};
 			PacketSender.SendToHost(normalRetryPacket);
 		}
@@ -104,7 +76,6 @@ namespace ONI_Together.Networking
 			}
 			_loadSubmitted = true;
 			SaveChunkAssembler.Clear();
-			object context = _synchronizationContext;
 			CoroutineRunner.RunOne(LoadSynchronizationSave());
 			return true;
 
@@ -112,22 +83,16 @@ namespace ONI_Together.Networking
 			{
 				if (delay)
 					yield return new WaitForSecondsRealtime(1f);
-				if (!ReferenceEquals(context, _synchronizationContext) || !IsCurrentSynchronization(synchronizationId))
+				if (!IsCurrentSynchronization(synchronizationId))
 					yield break;
-				SaveHelper.RequestWorldLoad(save, () =>
-				{
-					if (!ReferenceEquals(context, _synchronizationContext) || !IsCurrentSynchronization(synchronizationId))
-						return false;
-					_worldLoadStarted = true;
-					return true;
-				});
+				SaveHelper.RequestWorldLoad(save, () => IsCurrentSynchronization(synchronizationId));
 			}
 		}
 
 		private static bool _cancellingConnectionAttempt = false;
 
 		public static bool IsHardSyncInProgress => _state == ClientState.LoadingWorld;
-		public static TransitionResult Handle(ClientEvent evt)
+		public static bool Handle(ClientEvent evt)
 		{
 			using var _ = Profiler.Scope();
 
@@ -192,7 +157,7 @@ namespace ONI_Together.Networking
 			return ApplyStateTransition(nextState, evt);
 		}
 
-		private static TransitionResult ApplyStateTransition(ClientState nextState, ClientEvent evt)
+		private static bool ApplyStateTransition(ClientState nextState, ClientEvent evt)
 		{
 			if (nextState == ClientState.Disconnected)
 				ResetSynchronizationState();
@@ -203,13 +168,13 @@ namespace ONI_Together.Networking
 				DebugConsole.Log($"[GameClientLifecycle] {previousState} -> {_state} via {evt}");
 			}
 
-			return TransitionResult.Accepted();
+			return true;
 		}
 
-		private static TransitionResult RejectTransition(ClientEvent evt, string reason)
+		private static bool RejectTransition(ClientEvent evt, string reason)
 		{
 			DebugConsole.LogWarning($"[GameClientLifecycle] Rejected {evt} while in {_state}. Reason: {reason}");
-			return TransitionResult.Rejected(reason);
+			return false;
 		}
 
 		public static void Init()
@@ -238,7 +203,7 @@ namespace ONI_Together.Networking
 			NetworkConfig.TransportClient.OnContinueConnectionFlow = () => ContinueConnectionFlow();
 			NetworkConfig.TransportClient.OnReturnToMenu = (reason, message) =>
 			{
-				CoroutineRunner.RunOne(ShowMessageAndReturnToTitle(reason, message));
+				CoroutineRunner.RunOne(ShowMessageAndReturnToTitle(reason, message, skipIfReconnected: true));
 			};
 			NetworkConfig.TransportClient.OnRequestStateOrReturn = () =>
 			{
@@ -269,8 +234,7 @@ namespace ONI_Together.Networking
 					MultiplayerOverlay.Show(string.Format(STRINGS.UI.MP_OVERLAY.CLIENT.CONNECTING_TO_HOST, hostName));
 			}
 
-			TransitionResult transition = Handle(ClientEvent.BeginConnect);
-			if (!transition.Success)
+			if (!Handle(ClientEvent.BeginConnect))
 				return;
 
 			try
@@ -307,9 +271,7 @@ namespace ONI_Together.Networking
 			{
 				_cancellingConnectionAttempt = false;
 
-				TransitionResult transition = Handle(ClientEvent.CancelConnect);
-				if (!transition.Success)
-					DebugConsole.LogError($"[GameClient] Failed to complete connection cancellation: {transition.Reason}");
+				Handle(ClientEvent.CancelConnect);
 
 				MultiplayerOverlay.Close();
 			}
@@ -352,7 +314,7 @@ namespace ONI_Together.Networking
 			{
 				DebugConsole.LogWarning($"[GameClient] Host protocol validation failed: {protocolReason} | {protocolMessage}");
 				Disconnect();
-				NetworkConfig.TransportClient.OnReturnToMenu.Invoke(protocolReason, protocolMessage);
+				CoroutineRunner.RunOne(ShowMessageAndReturnToTitle(protocolReason, protocolMessage));
 				return;
 			}
 
@@ -483,9 +445,9 @@ namespace ONI_Together.Networking
 		{
 			using var _ = Profiler.Scope();
 
-			if (synchronizationId == 0 || synchronizationId <= _lastSynchronizationId)
+			if (synchronizationId == 0)
 			{
-				DebugConsole.LogWarning($"[Synchronization] Ignored duplicate/stale HardSync {synchronizationId}.");
+				DebugConsole.LogWarning($"[Synchronization] Ignored invalid HardSync {synchronizationId}.");
 				return false;
 			}
 			if (_state == ClientState.LoadingWorld)
@@ -493,20 +455,11 @@ namespace ONI_Together.Networking
 				DebugConsole.LogWarning($"[Synchronization] Rejected HardSync {synchronizationId} while loading {ActiveSynchronizationId}.");
 				return false;
 			}
-			if (_state != ClientState.LoadingWorld)
-			{
-				TransitionResult transition = Handle(ClientEvent.WorldLoadStarted);
-				if (!transition.Success)
-					return false;
-			}
+			if (!Handle(ClientEvent.WorldLoadStarted))
+				return false;
 
 			ActiveSynchronizationId = synchronizationId;
-			_lastSynchronizationId = synchronizationId;
-			_synchronizationContext = new object();
 			_loadSubmitted = false;
-			_worldLoadStarted = false;
-			_nextRetryRequestId = 0;
-			_pendingRetryRequestId = 0;
 			SaveChunkAssembler.Clear();
 			SpeedControlScreen.Instance?.Pause(false);
 			return true;
@@ -516,7 +469,7 @@ namespace ONI_Together.Networking
 		{
 			using var _ = Profiler.Scope();
 
-			if (_state != ClientState.LoadingWorld || !_worldLoadStarted)
+			if (_state != ClientState.LoadingWorld || !_loadSubmitted)
 				return;
 
 			ReadyManager.SendReadyStatusPacket(ClientReadyState.Ready);
@@ -532,14 +485,9 @@ namespace ONI_Together.Networking
 				return false;
 			}
 
-			TransitionResult transition = Handle(ClientEvent.SynchronizationCompleted);
-			if (!transition.Success)
-			{
-				DebugConsole.LogError($"[HardSync] could not enter gameplay after sync completion: {transition.Reason}");
+			if (!Handle(ClientEvent.SynchronizationCompleted))
 				return false;
-			}
 			ActiveSynchronizationId = 0;
-			_synchronizationContext = new object();
 			SaveChunkAssembler.Clear();
 			Game.Instance?.Trigger(MP_HASHES.GameClient_OnConnectedInGame);
 			MultiplayerSession.CreateConnectedPlayerCursors();
@@ -547,7 +495,7 @@ namespace ONI_Together.Networking
 			return true;
 		}
 
-		private static IEnumerator ShowMessageAndReturnToTitle(string reason = "", string message = "")
+		private static IEnumerator ShowMessageAndReturnToTitle(string reason = "", string message = "", bool skipIfReconnected = false)
 		{
 			string displayText;
 			if (string.IsNullOrEmpty(reason) && string.IsNullOrEmpty(message))
@@ -569,6 +517,8 @@ namespace ONI_Together.Networking
 
 			MultiplayerOverlay.Show(displayText);
 			yield return new WaitForSecondsRealtime(3f);
+			if (skipIfReconnected && State != ClientState.Disconnected)
+				yield break;
 			//PauseScreen.TriggerQuitGame(); // Force exit to frontend, getting a crash here
 			if (Utils.IsInGame())
 			{

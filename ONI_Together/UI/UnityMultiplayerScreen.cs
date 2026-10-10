@@ -422,7 +422,6 @@ namespace ONI_Together.UI
 			if (e.TryConsume(Action.Escape) || e.TryConsume(Action.MouseRight))
 			{
 				CancelConnectionOrClose();
-				this.Show(false);
 			}
 			base.OnKeyDown(e);
 		}

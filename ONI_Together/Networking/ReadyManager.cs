@@ -17,15 +17,12 @@ namespace ONI_Together.Networking
 	{
 		private const float HostOverlayCloseGraceSeconds = 1f;
 		private static readonly HashSet<ulong> Participants = new HashSet<ulong>();
-		private static readonly Dictionary<ulong, ulong> LastRetryRequests = new Dictionary<ulong, ulong>();
 		public static ulong LastIssuedSynchronizationId { get; private set; }
 		public static ulong ActiveSynchronizationId { get; private set; }
 		internal static ulong[] SynchronizationParticipants => Participants.ToArray();
 
 		internal static bool IsCurrentSynchronization(ulong synchronizationId) =>
 			IsSynchronizing && synchronizationId != 0 && synchronizationId == ActiveSynchronizationId;
-
-		internal static bool IsParticipant(ulong clientId) => IsSynchronizing && Participants.Contains(clientId);
 
 		internal static bool IsLoadingParticipant(ulong clientId, ulong synchronizationId) =>
 			IsCurrentSynchronization(synchronizationId) && Participants.Contains(clientId)
@@ -53,24 +50,21 @@ namespace ONI_Together.Networking
 			GameServerHardSync.PerformHardSync();
 		}
 
-		internal static void RetrySynchronizationTransfer(ulong requester, ulong synchronizationId, ulong retryRequestId, bool forceGeneric)
+		internal static void RetrySynchronizationTransfer(ulong requester, ulong synchronizationId, bool forceGeneric)
 		{
 			if (!MultiplayerSession.IsHost)
 				return;
-			if (!IsLoadingParticipant(requester, synchronizationId) || retryRequestId == 0)
+			if (!IsLoadingParticipant(requester, synchronizationId))
 			{
-				DebugConsole.LogWarning($"[Synchronization] Rejected retry {retryRequestId} from {requester} for sync {synchronizationId}.");
+				DebugConsole.LogWarning($"[Synchronization] Rejected retry from {requester} for sync {synchronizationId}.");
 				return;
 			}
-			if (LastRetryRequests.TryGetValue(requester, out ulong previous) && retryRequestId <= previous)
-				return;
 			byte[] snapshot = GameServerHardSync.SynchronizationSnapshot;
 			if (snapshot == null)
 			{
 				DebugConsole.LogWarning($"[Synchronization] Snapshot for sync {synchronizationId} is not yet available.");
 				return;
 			}
-			LastRetryRequests[requester] = retryRequestId;
 			SaveFileRequestPacket.SendSaveFile(requester, SaveHelper.WorldName + ".sav", snapshot, synchronizationId, forceGeneric);
 		}
 
@@ -78,13 +72,11 @@ namespace ONI_Together.Networking
 		{
 			if (!Participants.Remove(clientId))
 				return;
-			LastRetryRequests.Remove(clientId);
 			SaveFileRequestPacket.CancelTransfer(clientId);
-			SyncProgressPacket.RemoveParticipant(clientId);
 			RefreshReadyState();
 		}
 
-		public static bool IsSynchronizing { get; private set; }
+		public static bool IsSynchronizing => ActiveSynchronizationId != 0;
 		internal static float GameplayDrainUntil { get; private set; }
 		public static bool IsSimulationLocked => MultiplayerSession.IsHost
 			? IsSynchronizing
@@ -104,11 +96,8 @@ namespace ONI_Together.Networking
 				}
 			}
 
-			IsSynchronizing = false;
 			ActiveSynchronizationId = 0;
 			Participants.Clear();
-			LastRetryRequests.Clear();
-			SyncProgressPacket.ClearProgress();
 			GameplayDrainUntil = 0f;
 			GameServerHardSync.ResetSynchronizationState();
 		}
@@ -120,11 +109,8 @@ namespace ONI_Together.Networking
 			if (!MultiplayerSession.IsHost || IsSynchronizing)
 				return false;
 
-			IsSynchronizing = true;
 			ActiveSynchronizationId = checked(++LastIssuedSynchronizationId);
 			Participants.Clear();
-			LastRetryRequests.Clear();
-			SyncProgressPacket.ClearProgress();
 			SpeedControlScreen.Instance?.Pause(false);
 
 			foreach (MultiplayerPlayer player in MultiplayerSession.ConnectedPlayers.Values)
@@ -171,12 +157,9 @@ namespace ONI_Together.Networking
 			ulong synchronizationId = ActiveSynchronizationId;
 			foreach (ulong participant in SynchronizationParticipants)
 				PacketSender.SendToPlayer(participant, new AllClientsReadyPacket { SynchronizationId = synchronizationId }, PacketSendMode.Reliable);
-			IsSynchronizing = false;
 			ActiveSynchronizationId = 0;
 			Participants.Clear();
-			LastRetryRequests.Clear();
 			SaveFileRequestPacket.ClearPendingSynchronizationTransfers();
-			SyncProgressPacket.ClearProgress();
 			GameplayDrainUntil = 0f;
 			GameServerHardSync.OnSynchronizationCompleted();
 			MultiplayerOverlay.Show(STRINGS.UI.MP_OVERLAY.SYNC.FINALIZING_SYNC);
@@ -231,7 +214,7 @@ namespace ONI_Together.Networking
 			if (player.PlayerId == MultiplayerSession.HostUserID)
 				return;
 			if (state == ClientReadyState.Ready
-				&& (!IsParticipant(player.PlayerId) || player.readyState != ClientReadyState.Loading))
+				&& (!Participants.Contains(player.PlayerId) || player.readyState != ClientReadyState.Loading))
 				return;
 
 			player.readyState = state;

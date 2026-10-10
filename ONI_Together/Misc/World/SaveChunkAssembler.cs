@@ -100,7 +100,6 @@ namespace ONI_Together.Misc.World
 			if (!SaveFileRequestPacket.TryGetSynchronizationId(chunk.TransferId, out ulong synchronizationId)
 				|| !GameClient.CanReceiveSynchronizationSave(synchronizationId))
 				return;
-			GameClient.OnSynchronizationTransferProgress(synchronizationId);
 			if (!InProgress.TryGetValue(chunk.FileName, out var save))
 			{
 				// Determine chunk size from first received chunk
@@ -311,7 +310,6 @@ namespace ONI_Together.Misc.World
 				var progressPacket = new ONI_Together.Networking.Packets.World.SyncProgressPacket
 				{
 					ClientSteamID = MultiplayerSession.LocalUserID,
-					SynchronizationId = GameClient.ActiveSynchronizationId,
 					ClientName = playerName,
 					FileName = fileName,
 					ReceivedChunks = receivedChunks,

@@ -29,20 +29,20 @@ namespace ONI_Together.Networking.Packets.Core
 		{
 			using var _ = Profiler.Scope();
 
-			writer.Write((int)Status);
 			writer.Write(SenderId);
-			writer.Write(PlayerName ?? string.Empty);
 			writer.Write(SynchronizationId);
+			writer.Write((int)Status);
+			writer.Write(PlayerName ?? string.Empty);
 		}
 
 		public void Deserialize(BinaryReader reader)
 		{
 			using var _ = Profiler.Scope();
 
-			Status = (ClientReadyState)reader.ReadInt32();
 			SenderId = reader.ReadUInt64();
-			PlayerName = reader.ReadString();
 			SynchronizationId = reader.ReadUInt64();
+			Status = (ClientReadyState)reader.ReadInt32();
+			PlayerName = reader.ReadString();
 		}
 
 		public void OnDispatched()

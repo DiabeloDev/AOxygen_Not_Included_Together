@@ -28,9 +28,6 @@ namespace ONI_Together.Networking.Packets.World
             public System.DateTime LastUpdate;
         }
         public ulong ClientSteamID;      // Who is sending the progress
-        public ulong SynchronizationId;
-        internal static void ClearProgress() => ClientProgress.Clear();
-        internal static void RemoveParticipant(ulong clientId) => ClientProgress.Remove(clientId);
         public string ClientName;           // Readable player name
         public string FileName;             // Name of file being downloaded
         public int ReceivedChunks;          // How many chunks have been received
@@ -42,7 +39,6 @@ namespace ONI_Together.Networking.Packets.World
             using var _ = Profiler.Scope();
 
             writer.Write(ClientSteamID);
-            writer.Write(SynchronizationId);
             writer.Write(ClientName);
             writer.Write(FileName);
             writer.Write(ReceivedChunks);
@@ -55,7 +51,6 @@ namespace ONI_Together.Networking.Packets.World
             using var _ = Profiler.Scope();
 
             ClientSteamID = reader.ReadUInt64();
-            SynchronizationId = reader.ReadUInt64();
             ClientName = reader.ReadString();
             FileName = reader.ReadString();
             ReceivedChunks = reader.ReadInt32();
@@ -68,7 +63,7 @@ namespace ONI_Together.Networking.Packets.World
             using var _ = Profiler.Scope();
 
             // Only host processes client progress
-            if (!MultiplayerSession.IsHost || !ReadyManager.IsLoadingParticipant(ClientSteamID, SynchronizationId))
+            if (!MultiplayerSession.IsHost)
                 return;
 
             // Update client information

@@ -9,7 +9,6 @@ namespace ONI_Together.Networking.Packets.World
 	{
 		public ulong Requester;
 		public ulong SynchronizationId;
-		public ulong RetryRequestId;
 
 		public void Serialize(BinaryWriter writer)
 		{
@@ -17,7 +16,6 @@ namespace ONI_Together.Networking.Packets.World
 
 			writer.Write(Requester);
 			writer.Write(SynchronizationId);
-			writer.Write(RetryRequestId);
 		}
 
 		public void Deserialize(BinaryReader reader)
@@ -26,7 +24,6 @@ namespace ONI_Together.Networking.Packets.World
 
 			Requester = reader.ReadUInt64();
 			SynchronizationId = reader.ReadUInt64();
-			RetryRequestId = reader.ReadUInt64();
 		}
 
 		public void OnDispatched()
@@ -37,7 +34,7 @@ namespace ONI_Together.Networking.Packets.World
 				return;
 
 			DebugConsole.Log($"[TcpFallback] Client {Requester} requested UDP fallback for save transfer");
-			ReadyManager.RetrySynchronizationTransfer(Requester, SynchronizationId, RetryRequestId, true);
+			ReadyManager.RetrySynchronizationTransfer(Requester, SynchronizationId, true);
 		}
 	}
 }

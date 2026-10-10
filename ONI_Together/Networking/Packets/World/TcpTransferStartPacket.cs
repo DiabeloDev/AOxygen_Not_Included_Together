@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using ONI_Together.DebugTools;
 using ONI_Together.Menus;
@@ -53,7 +54,7 @@ namespace ONI_Together.Networking.Packets.World
 			MultiplayerOverlay.Show("Connecting for save download...");
 
 			ulong synchronizationId = SynchronizationId;
-			var isCurrent = GameClient.CaptureSynchronizationGuard(synchronizationId);
+			Func<bool> isCurrent = () => GameClient.IsCurrentSynchronization(synchronizationId);
 			TcpFileTransferClient.Download(hostIp, TcpPort, ClientId, synchronizationId, isCurrent,
 				(fileName, data) =>
 				{

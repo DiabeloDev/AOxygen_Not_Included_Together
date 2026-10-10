@@ -89,7 +89,6 @@ namespace ONI_Together.Networking.Transfer
                             {
                                 if (!isCurrent())
                                     return;
-                                GameClient.OnSynchronizationTransferProgress(synchronizationId);
                                 var bar = CreateClientProgressBar(percent);
                                 string message = string.Format(
                                     STRINGS.UI.MP_OVERLAY.CLIENT.TCP_DOWNLOADING_SAVE_FILE,

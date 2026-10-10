@@ -1,5 +1,4 @@
-﻿using ONI_Together.Misc;
-using ONI_Together.Misc.World;
+﻿using ONI_Together.Misc.World;
 using ONI_Together.Networking.Packets.Architecture;
 using System.IO;
 using Shared.Profiling;

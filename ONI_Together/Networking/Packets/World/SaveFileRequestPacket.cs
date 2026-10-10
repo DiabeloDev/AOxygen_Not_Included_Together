@@ -9,6 +9,8 @@ using ONI_Together.Networking.Transport.Steamworks;
 using Steamworks;
 using System;
 using System.Collections;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using Shared.Profiling;
 using ONI_Together.Menus;
@@ -18,12 +20,24 @@ namespace ONI_Together.Networking.Packets.World
 	public class SaveFileRequestPacket : IPacket, IAllowedWithoutWorldPacket
 	{
 		public ulong Requester;
+		public ulong SynchronizationId;
+		public ulong RetryRequestId;
+		private static readonly Dictionary<ulong, object> TransferRuns = new Dictionary<ulong, object>();
+
+		internal static string CreateTransferId(ulong synchronizationId) =>
+			synchronizationId.ToString(CultureInfo.InvariantCulture);
+
+		internal static bool TryGetSynchronizationId(string transferId, out ulong synchronizationId) =>
+			ulong.TryParse(transferId, NumberStyles.None, CultureInfo.InvariantCulture, out synchronizationId)
+			&& synchronizationId != 0;
 
 		public void Serialize(BinaryWriter writer)
 		{
 			using var _ = Profiler.Scope();
 
 			writer.Write(Requester);
+			writer.Write(SynchronizationId);
+			writer.Write(RetryRequestId);
 		}
 
 		public void Deserialize(BinaryReader reader)
@@ -31,6 +45,8 @@ namespace ONI_Together.Networking.Packets.World
 			using var _ = Profiler.Scope();
 
 			Requester = reader.ReadUInt64();
+			SynchronizationId = reader.ReadUInt64();
+			RetryRequestId = reader.ReadUInt64();
 		}
 
 		public void OnDispatched()
@@ -55,31 +71,16 @@ namespace ONI_Together.Networking.Packets.World
 				return;
 			}
 
-			if (!ReadyManager.IsSynchronizing)
+			if (RetryRequestId == 0)
 			{
-				GameServerHardSync.PerformHardSync();
+				DebugConsole.LogWarning($"[Packets/SaveFileRequest] Ignored zero retry ID from {Requester} for sync {SynchronizationId}.");
 				return;
 			}
 
-			if (player.readyState == ClientReadyState.Loading)
-			{
-				byte[] snapshot = GameServerHardSync.SynchronizationSnapshot;
-				if (snapshot == null)
-				{
-					DebugConsole.LogWarning($"[Packets/SaveFileRequest] Cannot resend to {Requester}; synchronization snapshot is not yet available.");
-					return;
-				}
-
-				SendSaveFile(Requester, SaveHelper.WorldName + ".sav", snapshot);
-				return;
-			}
-
-			const string reason = "Synchronization is in progress; this connection cannot join until it is complete.";
-			DebugConsole.LogWarning($"[Packets/SaveFileRequest] rejecting late join from {Requester}: {reason}");
-			NetworkConfig.TransportServer?.KickClient(Requester);
+			ReadyManager.RetrySynchronizationTransfer(Requester, SynchronizationId, RetryRequestId, false);
 		}
 
-		public static void SendSaveFileToAll(byte[] snapshot)
+		public static void SendSaveFileToAll(byte[] snapshot, ulong synchronizationId)
 		{
 			using var _ = Profiler.Scope();
 
@@ -87,43 +88,46 @@ namespace ONI_Together.Networking.Packets.World
 				return;
 
 			string fileName = SaveHelper.WorldName + ".sav";
-			foreach (var player in MultiplayerSession.ConnectedPlayers.Values)
+			foreach (ulong participant in ReadyManager.SynchronizationParticipants)
 			{
-				if (player.PlayerId == MultiplayerSession.HostUserID)
+				if (!ReadyManager.IsLoadingParticipant(participant, synchronizationId))
 					continue;
 
-				if (player.Connection == null || !player.ProtocolVerified)
-					continue;
-
-				if (player.readyState != ClientReadyState.Loading)
-					continue;
-
-				SendSaveFile(player.PlayerId, fileName, snapshot);
+				SendSaveFile(participant, fileName, snapshot, synchronizationId);
 			}
 		}
 
-		private static void SendSaveFile(ulong requester, string fileName, byte[] snapshot)
+		internal static void SendSaveFile(ulong requester, string fileName, byte[] snapshot, ulong synchronizationId, bool forceGeneric = false)
 		{
+			if (!ReadyManager.IsLoadingParticipant(requester, synchronizationId) || snapshot == null)
+			{
+				DebugConsole.LogWarning($"[SaveFileRequest] Ignored stale save send for {requester}, sync {synchronizationId}.");
+				return;
+			}
+			CancelTransfer(requester);
+			object run = new object();
+			TransferRuns[requester] = run;
 			try
 			{
-				if (NetworkConfig.IsLanConfig() && NetworkConfig.TransportServer is LiteNetLibServer lnlServer && lnlServer.TcpTransfer != null)
+				if (!forceGeneric && NetworkConfig.IsLanConfig() && NetworkConfig.TransportServer is LiteNetLibServer lnlServer && lnlServer.TcpTransfer != null)
 				{
 					int tcpPort = Configuration.Instance.Host.LanSettings.Port + 1;
-					lnlServer.TcpTransfer.QueueTransfer(requester, fileName, snapshot);
+					lnlServer.TcpTransfer.QueueTransfer(requester, synchronizationId, fileName, snapshot);
 
 					var startPacket = new TcpTransferStartPacket
 					{
 						TcpPort = tcpPort,
 						FileName = fileName,
 						FileSize = snapshot.Length,
-						ClientId = requester
+						ClientId = requester,
+						SynchronizationId = synchronizationId
 					};
 					PacketSender.SendToPlayer(requester, startPacket);
 					DebugConsole.Log($"[SaveFileRequest] Initiated TCP transfer for '{fileName}' to {requester}");
 				}
 				else
 				{
-					CoroutineRunner.RunOne(StreamChunks(snapshot, fileName, requester));
+					CoroutineRunner.RunOne(StreamChunks(snapshot, fileName, requester, synchronizationId, run));
 				}
 			}
 			catch (Exception ex)
@@ -132,35 +136,28 @@ namespace ONI_Together.Networking.Packets.World
 			}
 		}
 
-		public static void SendSaveFileViaUdp(ulong requester)
+		internal static void CancelTransfer(ulong requester)
 		{
-			using var _ = Profiler.Scope();
-
-			if (!MultiplayerSession.IsHost)
-				return;
-
-			byte[] snapshot = GameServerHardSync.SynchronizationSnapshot;
-			if (snapshot == null || !ReadyManager.IsSynchronizing
-				|| !MultiplayerSession.ConnectedPlayers.TryGetValue(requester, out MultiplayerPlayer player)
-				|| player.Connection == null
-				|| player.readyState != ClientReadyState.Loading)
-			{
-				DebugConsole.LogWarning($"[SaveFileRequest] Ignored UDP fallback request from {requester}; no active synchronization snapshot is available.");
-				return;
-			}
-
-			CoroutineRunner.RunOne(StreamChunks(snapshot, SaveHelper.WorldName + ".sav", requester));
+			TransferRuns.Remove(requester);
+			SaveFileTransferManager.CancelClient(requester);
+			if (NetworkConfig.TransportServer is LiteNetLibServer server)
+				server.TcpTransfer?.CancelClient(requester);
+			else if (NetworkConfig.TransportServer is RiptideServer riptide)
+				riptide.TcpTransfer?.CancelClient(requester);
 		}
 
 		internal static void ClearPendingSynchronizationTransfers()
 		{
 			SaveFileTransferManager.ClearTransfers();
+			TransferRuns.Clear();
 			if (NetworkConfig.TransportServer is LiteNetLibServer server)
 				server.TcpTransfer?.ClearPendingTransfers();
+			else if (NetworkConfig.TransportServer is RiptideServer riptide)
+				riptide.TcpTransfer?.ClearPendingTransfers();
 		}
 
 
-        private static IEnumerator StreamChunks(byte[] data, string fileName, ulong steamID)
+        private static IEnumerator StreamChunks(byte[] data, string fileName, ulong steamID, ulong synchronizationId, object run)
 		{
 			using var _ = Profiler.Scope();
 
@@ -175,12 +172,13 @@ namespace ONI_Together.Networking.Packets.World
 			DebugConsole.Log($"[SaveFileRequest] Starting SECURE transfer of '{fileName}' ({Utils.FormatBytes(data.Length)}) to {steamID} in {totalChunks} chunks.");
 
 			// SUA IDEIA: Registra transferência no manager para rastrear ACKs
-			string transferId = fileName.Replace(" ", "_").Replace(".sav", "");
+			string transferId = CreateTransferId(synchronizationId);
 			SaveFileTransferManager.StartTransfer(steamID, transferId, fileName, data, chunkSize);
 
 			for (int offset = 0; offset < data.Length; /* increments manually */)
 			{
-				if (!ReadyManager.IsSynchronizing)
+				if (!ReadyManager.IsLoadingParticipant(steamID, synchronizationId)
+					|| !TransferRuns.TryGetValue(steamID, out var currentRun) || !ReferenceEquals(run, currentRun))
 					yield break;
 
 				int size = Math.Min(chunkSize, data.Length - offset);
@@ -190,6 +188,7 @@ namespace ONI_Together.Networking.Packets.World
 				var chunkPacket = new SaveFileChunkPacket
 				{
 					FileName = fileName,
+					TransferId = transferId,
 					Offset = offset,
 					TotalSize = data.Length,
 					Chunk = chunk
@@ -199,7 +198,7 @@ namespace ONI_Together.Networking.Packets.World
 				var securePacket = new SecureTransferPacket
 				{
 					SequenceNumber = offset / chunkSize,  // Calculate chunk index from offset
-					TransferId = fileName.Replace(" ", "_").Replace(".sav", ""),
+					TransferId = transferId,
 					PayloadBytes = SecureTransferPacket.SerializeSaveFileChunk(chunkPacket)
 				};
 

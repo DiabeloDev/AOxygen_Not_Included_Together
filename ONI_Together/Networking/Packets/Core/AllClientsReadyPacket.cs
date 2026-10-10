@@ -8,22 +8,23 @@ namespace ONI_Together.Networking.Packets.Core
 {
 	public class AllClientsReadyPacket : IPacket, IAllowedWithoutWorldPacket
 	{
+		public ulong SynchronizationId;
 
 		public void Serialize(BinaryWriter writer)
 		{
-			// No payload needed for now
+			writer.Write(SynchronizationId);
 		}
 
 		public void Deserialize(BinaryReader reader)
 		{
-			// No payload to read
+			SynchronizationId = reader.ReadUInt64();
 		}
 
 		public void OnDispatched()
 		{
 			using var _ = Profiler.Scope();
 
-			if (MultiplayerSession.IsHost || !GameClient.CompleteSynchronization())
+			if (MultiplayerSession.IsHost || !GameClient.CompleteSynchronization(SynchronizationId))
 				return;
 
 			DebugConsole.Log("[AllClientsReadyPacket] Synchronization completed; closing overlay");
@@ -37,6 +38,5 @@ namespace ONI_Together.Networking.Packets.Core
 			MultiplayerOverlay.Show(STRINGS.UI.MP_OVERLAY.SYNC.FINALIZING_SYNC);
             MultiplayerOverlay.Close();
 		}
-
 	}
 }

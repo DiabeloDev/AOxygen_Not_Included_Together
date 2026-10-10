@@ -11,6 +11,7 @@ namespace ONI_Together.Networking.Packets.Core
 	class ClientReadyStatusPacket : IPacket, IAllowedWithoutWorldPacket
 	{
 		public ulong SenderId;
+		public ulong SynchronizationId;
 		public ClientReadyState Status = ClientReadyState.Unready;
 		public string PlayerName = string.Empty;
 
@@ -31,6 +32,7 @@ namespace ONI_Together.Networking.Packets.Core
 			writer.Write((int)Status);
 			writer.Write(SenderId);
 			writer.Write(PlayerName ?? string.Empty);
+			writer.Write(SynchronizationId);
 		}
 
 		public void Deserialize(BinaryReader reader)
@@ -40,6 +42,7 @@ namespace ONI_Together.Networking.Packets.Core
 			Status = (ClientReadyState)reader.ReadInt32();
 			SenderId = reader.ReadUInt64();
 			PlayerName = reader.ReadString();
+			SynchronizationId = reader.ReadUInt64();
 		}
 
 		public void OnDispatched()
@@ -82,10 +85,7 @@ namespace ONI_Together.Networking.Packets.Core
 
 			if (Status == ClientReadyState.Ready)
 			{
-				if (player.readyState == ClientReadyState.Ready)
-					return;
-
-				if (!ReadyManager.IsSynchronizing || player.readyState != ClientReadyState.Loading)
+				if (!ReadyManager.IsLoadingParticipant(SenderId, SynchronizationId))
 				{
 					DebugConsole.LogWarning(
 						$"[ClientReadyStatusPacket] rejected Ready for PlayerId={SenderId} " +
@@ -93,16 +93,13 @@ namespace ONI_Together.Networking.Packets.Core
 					return;
 				}
 			}
-			else if (ReadyManager.IsSynchronizing && player.readyState != ClientReadyState.Unready)
-			{
-				return;
-			}
 
 			bool nameChanged = !string.IsNullOrEmpty(PlayerName) && player.PlayerName != PlayerName;
 			if (nameChanged)
 				player.PlayerName = PlayerName;
 
-			ReadyManager.SetPlayerReadyState(player, Status);
+			if (Status == ClientReadyState.Ready || !ReadyManager.IsSynchronizing)
+				ReadyManager.SetPlayerReadyState(player, Status);
 
 			DebugConsole.Log($"[ClientReadyStatusPacket] {SenderId} marked as {Status}");
 

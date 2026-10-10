@@ -29,11 +29,19 @@ public static class SaveHelper
 			return Math.Max(minChunkKB, Configuration.GetHostProperty<int>("SaveFileTransferChunkKB"));
 		}
 	}
-	public static void RequestWorldLoad(WorldSave world)
+	public static void RequestWorldLoad(WorldSave world, Func<bool> isCurrent = null)
 	{
 		using var _ = Profiler.Scope();
 
-		NetworkingComponent.scheduler.Run(() => LoadWorldSave(Path.GetFileNameWithoutExtension(world.Name), world.Data));
+		NetworkingComponent.scheduler.Run(() =>
+		{
+			if (isCurrent != null && !isCurrent())
+			{
+				DebugConsole.LogWarning("[SaveHelper] Ignored stale scheduled synchronization save.");
+				return;
+			}
+			LoadWorldSave(Path.GetFileNameWithoutExtension(world.Name), world.Data);
+		});
 	}
 
 	private static void LoadWorldSave(string name, byte[] data)

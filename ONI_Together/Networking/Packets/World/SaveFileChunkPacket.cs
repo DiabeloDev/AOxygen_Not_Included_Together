@@ -9,6 +9,7 @@ namespace ONI_Together.Networking.Packets.World
 	public class SaveFileChunkPacket : IPacket, IAllowedWithoutWorldPacket
 	{
 		public string FileName;
+		public string TransferId;
 		public int Offset;
 		public int TotalSize;
 		public byte[] Chunk;
@@ -18,6 +19,7 @@ namespace ONI_Together.Networking.Packets.World
 			using var _ = Profiler.Scope();
 
 			writer.Write(FileName);
+			writer.Write(TransferId);
 			writer.Write(Offset);
 			writer.Write(TotalSize);
 			writer.Write(Chunk.Length);
@@ -29,6 +31,7 @@ namespace ONI_Together.Networking.Packets.World
 			using var _ = Profiler.Scope();
 
 			FileName = reader.ReadString();
+			TransferId = reader.ReadString();
 			Offset = reader.ReadInt32();
 			TotalSize = reader.ReadInt32();
 			int length = reader.ReadInt32();
@@ -39,7 +42,8 @@ namespace ONI_Together.Networking.Packets.World
 		{
 			using var _ = Profiler.Scope();
 
-			if (Utils.IsInGame() && !GameClient.IsHardSyncInProgress)
+			if (!SaveFileRequestPacket.TryGetSynchronizationId(TransferId, out ulong synchronizationId)
+				|| !GameClient.CanReceiveSynchronizationSave(synchronizationId))
 			{
 				return;
 			}

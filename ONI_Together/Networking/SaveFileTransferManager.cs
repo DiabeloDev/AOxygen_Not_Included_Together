@@ -60,6 +60,12 @@ namespace ONI_Together.Networking
             ActiveTransfers.Clear();
         }
 
+        internal static void CancelClient(ulong clientId)
+        {
+            foreach (string key in ActiveTransfers.Where(pair => pair.Value.ClientID == clientId).Select(pair => pair.Key).ToArray())
+                ActiveTransfers.Remove(key);
+        }
+
         /// <summary>
         /// Register new transfer and track chunks
         /// </summary>
@@ -97,6 +103,9 @@ namespace ONI_Together.Networking
         {
             using var _ = Profiler.Scope();
 
+            if (!SaveFileRequestPacket.TryGetSynchronizationId(transferId, out ulong synchronizationId)
+                || !ReadyManager.IsLoadingParticipant(clientID, synchronizationId))
+                return;
             string key = GetTransferKey(clientID, transferId);
             if (!ActiveTransfers.TryGetValue(key, out var transfer))
             {
@@ -141,6 +150,12 @@ namespace ONI_Together.Networking
 
             foreach (var transfer in ActiveTransfers.Values.ToArray())
             {
+                if (!SaveFileRequestPacket.TryGetSynchronizationId(transfer.TransferId, out ulong synchronizationId)
+                    || !ReadyManager.IsLoadingParticipant(transfer.ClientID, synchronizationId))
+                {
+                    ActiveTransfers.Remove(GetTransferKey(transfer.ClientID, transfer.TransferId));
+                    continue;
+                }
                 // Check chunks that were sent but haven't received ACK for more than 5 seconds
                 for (int i = 0; i <= Math.Min(transfer.HighestAckReceived + 10, transfer.TotalChunks - 1); i++) // Only check window near last ACK
                 {
@@ -178,6 +193,7 @@ namespace ONI_Together.Networking
                 var chunkPacket = new SaveFileChunkPacket
                 {
                     FileName = transfer.FileName,
+                    TransferId = transfer.TransferId,
                     Offset = offset,
                     TotalSize = transfer.FileData.Length,
                     Chunk = chunkData

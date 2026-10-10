@@ -1,8 +1,10 @@
 using ONI_Together.DebugTools;
 using ONI_Together.Menus;
 using ONI_Together.Misc;
+using ONI_Together.Misc.World;
 using ONI_Together.Networking.Components;
 using ONI_Together.Networking.Packets.Handshake;
+using ONI_Together.Networking.Packets.Core;
 using ONI_Together.Networking.Packets.World;
 using Shared.Profiling;
 using ONI_Together.Networking.States;
@@ -21,6 +23,106 @@ namespace ONI_Together.Networking
 
 		private static ClientState _state = ClientState.Disconnected;
 		public static ClientState State => _state;
+		public static ulong ActiveSynchronizationId { get; private set; }
+		private static ulong _lastSynchronizationId;
+		private static object _synchronizationContext = new object();
+		private static bool _loadSubmitted;
+		private static bool _worldLoadStarted;
+		private static ulong _nextRetryRequestId;
+		private static ulong _pendingRetryRequestId;
+		private static bool _pendingRetryForceGeneric;
+
+		internal static bool IsCurrentSynchronization(ulong synchronizationId) =>
+			MultiplayerSession.IsClient && _state == ClientState.LoadingWorld
+			&& synchronizationId != 0 && synchronizationId == ActiveSynchronizationId;
+
+		internal static bool CanReceiveSynchronizationSave(ulong synchronizationId) =>
+			IsCurrentSynchronization(synchronizationId) && !_loadSubmitted;
+
+		internal static System.Func<bool> CaptureSynchronizationGuard(ulong synchronizationId)
+		{
+			object context = _synchronizationContext;
+			return () => ReferenceEquals(context, _synchronizationContext) && CanReceiveSynchronizationSave(synchronizationId);
+		}
+
+		internal static void ResetSynchronizationState()
+		{
+			ActiveSynchronizationId = 0;
+			_lastSynchronizationId = 0;
+			_synchronizationContext = new object();
+			_loadSubmitted = false;
+			_worldLoadStarted = false;
+			_pendingRetryRequestId = 0;
+			SaveChunkAssembler.Clear();
+		}
+
+		internal static void OnSynchronizationTransferProgress(ulong synchronizationId)
+		{
+			if (CanReceiveSynchronizationSave(synchronizationId))
+				_pendingRetryRequestId = 0;
+		}
+
+		internal static void RequestSynchronizationTransferRetry(ulong synchronizationId, bool forceGeneric = false)
+		{
+			if (!CanReceiveSynchronizationSave(synchronizationId))
+			{
+				DebugConsole.LogWarning($"[Synchronization] Ignored transfer retry for inactive/submitted sync {synchronizationId}.");
+				return;
+			}
+			if (_pendingRetryRequestId != 0 && (!forceGeneric || _pendingRetryForceGeneric))
+				return;
+			_pendingRetryRequestId = checked(++_nextRetryRequestId);
+			_pendingRetryForceGeneric = forceGeneric;
+
+			if (forceGeneric)
+			{
+				var packet = new TcpFallbackRequestPacket
+				{
+					Requester = MultiplayerSession.LocalUserID,
+					SynchronizationId = synchronizationId,
+					RetryRequestId = _pendingRetryRequestId
+				};
+				PacketSender.SendToHost(packet);
+				return;
+			}
+
+			var normalRetryPacket = new SaveFileRequestPacket
+			{
+				Requester = MultiplayerSession.LocalUserID,
+				SynchronizationId = synchronizationId,
+				RetryRequestId = _pendingRetryRequestId
+			};
+			PacketSender.SendToHost(normalRetryPacket);
+		}
+
+		internal static bool SubmitSynchronizationSave(ulong synchronizationId, WorldSave save, bool delay)
+		{
+			if (!CanReceiveSynchronizationSave(synchronizationId))
+			{
+				DebugConsole.LogWarning($"[Synchronization] Ignored duplicate/stale save completion for sync {synchronizationId}.");
+				return false;
+			}
+			_loadSubmitted = true;
+			SaveChunkAssembler.Clear();
+			object context = _synchronizationContext;
+			CoroutineRunner.RunOne(LoadSynchronizationSave());
+			return true;
+
+			IEnumerator LoadSynchronizationSave()
+			{
+				if (delay)
+					yield return new WaitForSecondsRealtime(1f);
+				if (!ReferenceEquals(context, _synchronizationContext) || !IsCurrentSynchronization(synchronizationId))
+					yield break;
+				SaveHelper.RequestWorldLoad(save, () =>
+				{
+					if (!ReferenceEquals(context, _synchronizationContext) || !IsCurrentSynchronization(synchronizationId))
+						return false;
+					_worldLoadStarted = true;
+					return true;
+				});
+			}
+		}
 
 		private static bool _cancellingConnectionAttempt = false;
 
@@ -92,6 +194,8 @@ namespace ONI_Together.Networking
 
 		private static TransitionResult ApplyStateTransition(ClientState nextState, ClientEvent evt)
 		{
+			if (nextState == ClientState.Disconnected)
+				ResetSynchronizationState();
 			if (_state != nextState)
 			{
 				ClientState previousState = _state;
@@ -362,12 +466,12 @@ namespace ONI_Together.Networking
 				DebugConsole.Log("[GameClient] Client is in menu - requesting save file or sending ready status");
 				MultiplayerOverlay.Show(string.Format(STRINGS.UI.MP_OVERLAY.CLIENT.WAITING_FOR_PLAYER, SteamFriends.GetFriendPersonaName(MultiplayerSession.HostUserID.AsCSteamID())));
 				DebugConsole.Log("[GameClient] Requesting synchronized save file from host");
-				PacketSender.SendToHost(new SaveFileRequestPacket { Requester = MultiplayerSession.LocalUserID });
+				PacketSender.SendToHost(new SynchronizationRequestPacket { Requester = MultiplayerSession.LocalUserID });
 			}
 			else if (Utils.IsInGame())
 			{
 				DebugConsole.Log("[GameClient] Client reconnected while in game; requesting host synchronization");
-				PacketSender.SendToHost(new SaveFileRequestPacket { Requester = MultiplayerSession.LocalUserID });
+				PacketSender.SendToHost(new SynchronizationRequestPacket { Requester = MultiplayerSession.LocalUserID });
 			}
 			else
 			{
@@ -375,10 +479,20 @@ namespace ONI_Together.Networking
 			}
 		}
 
-		public static bool BeginSynchronization()
+		public static bool BeginSynchronization(ulong synchronizationId)
 		{
 			using var _ = Profiler.Scope();
 
+			if (synchronizationId == 0 || synchronizationId <= _lastSynchronizationId)
+			{
+				DebugConsole.LogWarning($"[Synchronization] Ignored duplicate/stale HardSync {synchronizationId}.");
+				return false;
+			}
+			if (_state == ClientState.LoadingWorld)
+			{
+				DebugConsole.LogWarning($"[Synchronization] Rejected HardSync {synchronizationId} while loading {ActiveSynchronizationId}.");
+				return false;
+			}
 			if (_state != ClientState.LoadingWorld)
 			{
 				TransitionResult transition = Handle(ClientEvent.WorldLoadStarted);
@@ -386,6 +500,14 @@ namespace ONI_Together.Networking
 					return false;
 			}
 
+			ActiveSynchronizationId = synchronizationId;
+			_lastSynchronizationId = synchronizationId;
+			_synchronizationContext = new object();
+			_loadSubmitted = false;
+			_worldLoadStarted = false;
+			_nextRetryRequestId = 0;
+			_pendingRetryRequestId = 0;
+			SaveChunkAssembler.Clear();
 			SpeedControlScreen.Instance?.Pause(false);
 			return true;
 		}
@@ -394,18 +516,21 @@ namespace ONI_Together.Networking
 		{
 			using var _ = Profiler.Scope();
 
-			if (_state != ClientState.LoadingWorld)
+			if (_state != ClientState.LoadingWorld || !_worldLoadStarted)
 				return;
 
 			ReadyManager.SendReadyStatusPacket(ClientReadyState.Ready);
 		}
 
-		public static bool CompleteSynchronization()
+		public static bool CompleteSynchronization(ulong synchronizationId)
 		{
 			using var _ = Profiler.Scope();
 
-			if (_state != ClientState.LoadingWorld)
+			if (!IsCurrentSynchronization(synchronizationId))
+			{
+				DebugConsole.LogWarning($"[Synchronization] Ignored AllReady for inactive sync {synchronizationId}.");
 				return false;
+			}
 
 			TransitionResult transition = Handle(ClientEvent.SynchronizationCompleted);
 			if (!transition.Success)
@@ -413,6 +538,9 @@ namespace ONI_Together.Networking
 				DebugConsole.LogError($"[HardSync] could not enter gameplay after sync completion: {transition.Reason}");
 				return false;
 			}
+			ActiveSynchronizationId = 0;
+			_synchronizationContext = new object();
+			SaveChunkAssembler.Clear();
 			Game.Instance?.Trigger(MP_HASHES.GameClient_OnConnectedInGame);
 			MultiplayerSession.CreateConnectedPlayerCursors();
 			SelectToolPatch.UpdateColor();

@@ -8,6 +8,7 @@ namespace ONI_Together.Networking.Packets.Core
 	public class ClientReadyStatusUpdatePacket : IPacket, IAllowedWithoutWorldPacket
 	{
 		public string Message;
+		public ulong SynchronizationId;
 
 		public ClientReadyStatusUpdatePacket() { }
 
@@ -23,6 +24,7 @@ namespace ONI_Together.Networking.Packets.Core
 			using var _ = Profiler.Scope();
 
 			writer.Write(Message);
+			writer.Write(SynchronizationId);
 		}
 
 		public void Deserialize(BinaryReader reader)
@@ -30,6 +32,7 @@ namespace ONI_Together.Networking.Packets.Core
 			using var _ = Profiler.Scope();
 
 			Message = reader.ReadString();
+			SynchronizationId = reader.ReadUInt64();
 		}
 
 		public void OnDispatched()
@@ -40,6 +43,8 @@ namespace ONI_Together.Networking.Packets.Core
 			if (MultiplayerSession.IsHost)
 				return;
 
+			if (SynchronizationId != 0 && !GameClient.IsCurrentSynchronization(SynchronizationId))
+				return;
 			MultiplayerOverlay.Show(Message);
 		}
 	}

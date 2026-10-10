@@ -6,14 +6,15 @@ namespace ONI_Together.Networking.Packets.Core
 {
 	public class HardSyncPacket : IPacket, IAllowedWithoutWorldPacket
 	{
+		public ulong SynchronizationId;
 		public void Serialize(BinaryWriter writer)
 		{
-			// No payload needed
+			writer.Write(SynchronizationId);
 		}
 
 		public void Deserialize(BinaryReader reader)
 		{
-			// No payload needed
+			SynchronizationId = reader.ReadUInt64();
 		}
 
 		public void OnDispatched()
@@ -23,7 +24,7 @@ namespace ONI_Together.Networking.Packets.Core
 			if (MultiplayerSession.IsHost)
 				return;
 
-			if (!GameClient.BeginSynchronization())
+			if (!GameClient.BeginSynchronization(SynchronizationId))
 				return;
 
 			// Hide cursors until their current positions arrive after synchronization.

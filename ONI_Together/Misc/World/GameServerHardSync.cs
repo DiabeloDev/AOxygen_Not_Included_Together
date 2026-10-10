@@ -1,7 +1,6 @@
 using ONI_Together.DebugTools;
 using ONI_Together.Networking.Packets.Core;
 using ONI_Together.Networking.Packets.World;
-using ONI_Together.Networking.States;
 using System;
 using System.Collections;
 using Shared.Profiling;
@@ -41,21 +40,13 @@ namespace ONI_Together.Networking
 			}
 
 			_consumeDailyUse = consumeDailyUse;
+			ulong synchronizationId = ReadyManager.ActiveSynchronizationId;
 			hardSyncDoneThisCycle = false;
 			int clientCount = 0;
-			foreach (MultiplayerPlayer player in MultiplayerSession.ConnectedPlayers.Values)
+			foreach (ulong participant in ReadyManager.SynchronizationParticipants)
 			{
-				if (player.PlayerId == MultiplayerSession.HostUserID)
-					continue;
-
-				if (player.Connection == null || !player.ProtocolVerified)
-					continue;
-
-				if (player.readyState != ClientReadyState.Loading)
-					continue;
-
 				clientCount++;
-				PacketSender.SendToPlayer(player.PlayerId, new HardSyncPacket());
+				PacketSender.SendToPlayer(participant, new HardSyncPacket { SynchronizationId = synchronizationId });
 			}
 
 			foreach (PlayerCursor cursor in MultiplayerSession.PlayerCursors.Values)
@@ -63,28 +54,28 @@ namespace ONI_Together.Networking
 
 			ReadyManager.StartGameplayDrain(ClientTrafficDrainSeconds);
 			DebugConsole.Log($"[HardSync] Synchronization started for {clientCount} client(s).");
-			CoroutineRunner.RunOne(DrainClientTrafficThenTransfer());
+			CoroutineRunner.RunOne(DrainClientTrafficThenTransfer(synchronizationId));
 			ReadyManager.RefreshReadyState();
 		}
 
-		private static IEnumerator DrainClientTrafficThenTransfer()
+		private static IEnumerator DrainClientTrafficThenTransfer(ulong synchronizationId)
 		{
-			while (ReadyManager.IsSynchronizing
+			while (ReadyManager.IsCurrentSynchronization(synchronizationId)
 				&& UnityEngine.Time.realtimeSinceStartup < ReadyManager.GameplayDrainUntil)
 				yield return null;
 
-			if (!ReadyManager.IsSynchronizing)
+			if (!ReadyManager.IsCurrentSynchronization(synchronizationId))
 				yield break;
 
 			// Close gameplay admission before yielding so admitted dispatches finish before capture.
 			yield return null;
-			if (!ReadyManager.IsSynchronizing)
+			if (!ReadyManager.IsCurrentSynchronization(synchronizationId))
 				yield break;
 
 			try
 			{
 				_synchronizationSnapshot = SaveHelper.GetWorldSave();
-				SaveFileRequestPacket.SendSaveFileToAll(_synchronizationSnapshot);
+				SaveFileRequestPacket.SendSaveFileToAll(_synchronizationSnapshot, synchronizationId);
 				ReadyManager.RefreshReadyState();
 			}
 			catch (Exception ex)

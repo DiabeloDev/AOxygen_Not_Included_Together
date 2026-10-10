@@ -275,9 +275,7 @@ namespace ONI_Together.Networking.Transport.Steamworks
 					(stateChange & EChatMemberStateChange.k_EChatMemberStateChangeKicked) != 0)
 			{
 				if (MultiplayerSession.ConnectedPlayers.TryGetValue(userId, out var p))
-					p.Connection = null;
-
-				MultiplayerSession.ConnectedPlayers.Remove(userId);
+					MultiplayerSession.RemoveConnectedPlayer(userId, p.Connection);
 
 				RefreshLobbyMembers();
 				DebugConsole.Log($"[SteamLobby] {name} left the lobby.");

@@ -142,6 +142,7 @@ namespace ONI_Together.Networking.Transport.Lan
                 MultiplayerSession.ConnectedPlayers.Add(clientId, player);
             }
             player.Connection = e.Client;
+            player.ProtocolVerified = false;
 
             e.Client.CanQualityDisconnect = false;
             e.Client.MaxSendAttempts = 30;
@@ -164,20 +165,15 @@ namespace ONI_Together.Networking.Transport.Lan
 
             ulong clientId = e.Client.Id;
 
-            RemoveClientFromList(clientId);
-
-            if (MultiplayerSession.ConnectedPlayers.TryGetValue(clientId, out MultiplayerPlayer player))
+            if (MultiplayerSession.RemoveConnectedPlayer(clientId, e.Client))
             {
-                player.Connection = null;
-                MultiplayerSession.ConnectedPlayers.Remove(clientId);
+                RemoveClientFromList(clientId);
                 DebugConsole.Log($"Player {clientId} disconnected.");
             }
             else
             {
                 DebugConsole.LogWarning($"Disconnected client {clientId} was not found in ConnectedPlayers.");
             }
-            ReadyManager.RefreshReadyState();
-            MultiplayerSession.RefreshAllPlayerCursors();
         }
 
         private void OnServerMessageReceived(object sender, MessageReceivedEventArgs e)

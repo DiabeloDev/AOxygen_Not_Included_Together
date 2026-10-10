@@ -209,6 +209,7 @@ namespace ONI_Together.Networking.Transport.Lan
                 MultiplayerSession.ConnectedPlayers[clientId] = player;
             }
             player.Connection = peer;
+            player.ProtocolVerified = false;
 
             if (!ClientList.Contains(clientId))
                 ClientList.Add(clientId);
@@ -222,19 +223,17 @@ namespace ONI_Together.Networking.Transport.Lan
 
             if (_clientIdByPeerId.TryGetValue(peer.Id, out ulong clientId))
             {
+                if (!_peersByClientId.TryGetValue(clientId, out var currentPeer) || !ReferenceEquals(currentPeer, peer))
+                    return;
                 _peersByClientId.Remove(clientId);
                 _clientIdByPeerId.Remove(peer.Id);
                 ClientList.Remove(clientId);
 
-                if (MultiplayerSession.ConnectedPlayers.TryGetValue(clientId, out var player))
+                if (MultiplayerSession.RemoveConnectedPlayer(clientId, peer))
                 {
-                    player.Connection = null;
-                    MultiplayerSession.ConnectedPlayers.Remove(clientId);
                     DebugConsole.Log("[LiteNetLibServer] Player " + clientId + " disconnected. Reason: " + disconnectInfo.Reason);
                 }
 
-                ReadyManager.RefreshReadyState();
-                MultiplayerSession.RefreshAllPlayerCursors();
             }
         }
 
@@ -332,11 +331,7 @@ namespace ONI_Together.Networking.Transport.Lan
                 _peersByClientId.Remove(clientId);
                 _clientIdByPeerId.Remove(peer.Id);
                 ClientList.Remove(clientId);
-                if (MultiplayerSession.ConnectedPlayers.TryGetValue(clientId, out var player))
-                    player.Connection = null;
-                MultiplayerSession.ConnectedPlayers.Remove(clientId);
-                ReadyManager.RefreshReadyState();
-                MultiplayerSession.RefreshAllPlayerCursors();
+                MultiplayerSession.RemoveConnectedPlayer(clientId, peer);
                 DebugConsole.Log("[LiteNetLibServer] Kicked client: " + clientId);
             }
         }

@@ -495,10 +495,10 @@ namespace ONI_Together.Networking.Transport.Lan
             if (!cleanupGeneration.HasValue)
                 yield break;
 
-            MultiplayerOverlay.Show(STRINGS.UI.MP_OVERLAY.CLIENT.CONNECTION_FAILED);
-            yield return new WaitForSecondsRealtime(3f);
-            if (_connectionGeneration == cleanupGeneration.Value)
-                MultiplayerOverlay.Close();
+            NetworkConfig.TransportClient.OnReturnToMenu.Invoke(
+                CLIENT.RIPTIDE.CONNECTION_FAILED,
+                CLIENT.RIPTIDE.CONNECTION_FAILED_DESC
+            );
         }
 
         private bool IsCurrentAttempt(Client attemptClient, int generation)

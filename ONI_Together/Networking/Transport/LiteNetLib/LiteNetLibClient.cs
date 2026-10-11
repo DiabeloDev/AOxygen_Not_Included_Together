@@ -3,9 +3,7 @@ using LiteNetLib.Utils;
 using ONI_Together.DebugTools;
 using ONI_Together.Menus;
 using ONI_Together.Misc;
-using ONI_Together.Networking.OxySync.Components;
 using ONI_Together.Networking.Packets.Architecture;
-using ONI_Together.Networking.States;
 using Shared;
 using Shared.Profiling;
 using System;
@@ -30,14 +28,15 @@ namespace ONI_Together.Networking.Transport.Lan
         ///
         /// The mod only learns it is connected from LiteNetLib's PeerConnectedEvent, which
         /// is delivered by PollEvents. Twice in one evening the host accepted a client's
-        /// connection within half a second - "Remote client connected" in the host log - and
-        /// the client's event arrived 3.5 seconds later in one case and never in the other,
-        /// although Unity was updating and PollEvents was being called.
+        /// reconnect after a world load within half a second - "Remote client connected" in
+        /// the host log - and the client's event arrived 3.5 seconds later in one case and
+        /// never in the other, although Unity was updating and PollEvents was being called.
         /// The peer's own ConnectionState said Connected the whole time. This flag lets
         /// WaitForConnectionSuccess tell that apart from a connection that is still pending.
         /// </summary>
         private static bool _connectedEventDelivered;
         private static int _connectionGeneration;
+        private const string HostIdentityHandshake = "ONI_TOGETHER_HOST";
 
         // LAN Discovery
         private static NetManager _discoveryClient;
@@ -47,10 +46,11 @@ namespace ONI_Together.Networking.Transport.Lan
 
         public static NetManager Client => _client;
         public static NetPeer ServerPeer => _serverPeer;
-        public static ulong CLIENT_ID { get; private set; }
 
         public bool IsConnected => _serverPeer != null && _serverPeer.ConnectionState == ConnectionState.Connected;
         public static int MaxServerCapacity { get; internal set; } = 16;
+        public bool IsLoadingReconnect { get; set; }
+
         private static readonly ConcurrentQueue<byte[]> _incomingPackets = new ConcurrentQueue<byte[]>();
 
         // Network health
@@ -68,11 +68,6 @@ namespace ONI_Together.Networking.Transport.Lan
         public override float OutgoingBandwidth => _clientOutBw;
         public override int IncomingPps => _clientInPps;
         public override int OutgoingPps => _clientOutPps;
-
-        public static void ResetLocalId()
-        {
-            CLIENT_ID = 0;
-        }
 
         public static void StartLanDiscovery(int targetPort = 8080)
         {
@@ -163,11 +158,13 @@ namespace ONI_Together.Networking.Transport.Lan
             }
 
             int generation = ++_connectionGeneration;
-            float startedAt = Time.realtimeSinceStartup;
             int timeout = Configuration.Instance.Client.TimeoutSeconds;
+            ulong clientId = NetworkConfig.GetLocalID();
 
             MultiplayerSession.ServerIp = ip;
             MultiplayerSession.ServerPort = port;
+            MultiplayerSession.SetHost(Utils.NilUlong());
+            MultiplayerSession.InActiveSession = false;
 
             _listener = new EventBasedNetListener();
             _listener.PeerConnectedEvent += OnConnectedToServer;
@@ -190,15 +187,16 @@ namespace ONI_Together.Networking.Transport.Lan
 
             var writer = new NetDataWriter();
             writer.Put("ONI_TOGETHER");
+            writer.Put(clientId);
             _connectedEventDelivered = false;
             _serverPeer = _client.Connect(ip, port, writer);
 
-            CoroutineRunner.RunOne(WaitForConnectionSuccess(timeout, generation, startedAt));
+            CoroutineRunner.RunOne(WaitForConnectionSuccess(timeout, generation));
         }
 
-        private IEnumerator WaitForConnectionSuccess(int timeoutSeconds, int generation, float startedAt)
+        private IEnumerator WaitForConnectionSuccess(int timeoutSeconds, int generation)
         {
-            float elapsed = 0f;
+            float startedAt = Time.realtimeSinceStartup;
             float connectedWithoutEventSince = -1f;
 
             while (Time.realtimeSinceStartup - startedAt < timeoutSeconds)
@@ -206,34 +204,36 @@ namespace ONI_Together.Networking.Transport.Lan
                 if (generation != _connectionGeneration)
                     yield break;
 
-                if (_connectedEventDelivered)
+                if (_connectedEventDelivered && MultiplayerSession.InActiveSession)
                     yield break;
 
-                if (_serverPeer != null && _serverPeer.ConnectionState == ConnectionState.Connected)
+                if (!_connectedEventDelivered
+                    && _serverPeer != null
+                    && _serverPeer.ConnectionState == ConnectionState.Connected)
                 {
+                    float now = Time.realtimeSinceStartup;
                     // The transport is connected; only the event has not reached the mod. Give
                     // PollEvents one more tick in case it is merely queued, then stop waiting for
                     // it - the handler is the same one the event would have run.
                     if (connectedWithoutEventSince < 0f)
-                        connectedWithoutEventSince = elapsed;
-                    else if (elapsed - connectedWithoutEventSince >= 1f)
+                        connectedWithoutEventSince = now;
+                    else if (now - connectedWithoutEventSince >= 1f)
                     {
-                        DebugConsole.LogWarning($"[LiteNetLibClient] Peer has been Connected for {elapsed - connectedWithoutEventSince:0.0}s ({elapsed:0.0}s since connect) but PeerConnectedEvent never arrived - completing the connection from the poll loop.");
+                        DebugConsole.LogWarning($"[LiteNetLibClient] Peer has been Connected for {now - connectedWithoutEventSince:0.0}s ({now - startedAt:0.0}s since connect) but PeerConnectedEvent never arrived - completing the connection from the poll loop.");
                         OnConnectedToServer(_serverPeer);
                         yield break;
                     }
                 }
 
                 yield return new WaitForSecondsRealtime(0.5f);
-                elapsed += 0.5f;
             }
 
             if (generation != _connectionGeneration)
                 yield break;
 
-            if (!_connectedEventDelivered)
+            if (!_connectedEventDelivered || !MultiplayerSession.InActiveSession)
             {
-                DebugConsole.LogError("[LiteNetLibClient] Connection timed out.");
+                DebugConsole.LogError("[LiteNetLibClient] Connection timed out before host identity exchange completed.");
                 OnConnectionFailed?.Invoke();
                 Disconnect();
                 OnReturnToMenu?.Invoke(
@@ -254,18 +254,21 @@ namespace ONI_Together.Networking.Transport.Lan
             _connectedEventDelivered = true;
 
             _serverPeer = peer;
-            CLIENT_ID = (ulong)peer.RemoteId + 2;
+            CompleteConnectionAfterIdentityExchange();
+        }
 
-            OnClientConnected?.Invoke();
-            MultiplayerSession.SetHost(1);
+        private void CompleteConnectionAfterIdentityExchange()
+        {
+            if (!_connectedEventDelivered || MultiplayerSession.HostUserID == 0 || MultiplayerSession.InActiveSession)
+                return;
+
+            var host = new MultiplayerPlayer(MultiplayerSession.HostUserID) { Connection = _serverPeer };
+            MultiplayerSession.ConnectedPlayers[MultiplayerSession.HostUserID] = host;
+            MultiplayerSession.KnownPlayerNames[MultiplayerSession.LocalUserID] = Utils.GetLocalPlayerName();
             MultiplayerSession.InActiveSession = true;
 
-            var host = new MultiplayerPlayer(1) { Connection = peer };
-            host.readyState = ClientReadyState.Ready;
-            MultiplayerSession.ConnectedPlayers[1] = host;
-            MultiplayerSession.KnownPlayerNames[CLIENT_ID] = Utils.GetLocalPlayerName();
-
-            DebugConsole.Log("[LiteNetLibClient] Connected to host! Assigned Client ID: " + CLIENT_ID);
+            OnClientConnected?.Invoke();
+            DebugConsole.Log("[LiteNetLibClient] Connected to host! Assigned Client ID: " + MultiplayerSession.LocalUserID);
             Game.Instance?.Trigger(MP_HASHES.OnConnected);
             OnRequestStateOrReturn?.Invoke();
         }
@@ -275,6 +278,9 @@ namespace ONI_Together.Networking.Transport.Lan
             using var _ = Profiler.Scope();
 
             _serverPeer = null;
+            _connectedEventDelivered = false;
+            MultiplayerSession.SetHost(Utils.NilUlong());
+            MultiplayerSession.InActiveSession = false;
 
             OnClientDisconnected?.Invoke();
             MultiplayerSession.ConnectedPlayers.Clear();
@@ -327,7 +333,30 @@ namespace ONI_Together.Networking.Transport.Lan
         private void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod deliveryMethod)
         {
             byte[] rawData = reader.GetRemainingBytes();
+            if (TryHandleHostIdentity(peer, rawData))
+                return;
+
             _incomingPackets.Enqueue(rawData);
+        }
+
+        private bool TryHandleHostIdentity(NetPeer peer, byte[] data)
+        {
+            var identityReader = new NetDataReader(data);
+            if (!identityReader.TryGetString(out string magic) || magic != HostIdentityHandshake)
+                return false;
+
+            if (!identityReader.TryGetULong(out ulong hostId)
+                || hostId == 0
+                || identityReader.AvailableBytes != 0)
+            {
+                DebugConsole.LogError("[LiteNetLibClient] Received malformed host identity response.");
+                peer.Disconnect();
+                return true;
+            }
+
+            MultiplayerSession.SetHost(hostId);
+            CompleteConnectionAfterIdentityExchange();
+            return true;
         }
 
         private void OnNetworkError(IPEndPoint endPoint, SocketError socketError)
@@ -354,6 +383,8 @@ namespace ONI_Together.Networking.Transport.Lan
             _client?.Stop();
             _serverPeer = null;
             _connectedEventDelivered = false;
+            MultiplayerSession.SetHost(Utils.NilUlong());
+            MultiplayerSession.InActiveSession = false;
             _client = null;
 
             while (_incomingPackets.TryDequeue(out var _)) { }

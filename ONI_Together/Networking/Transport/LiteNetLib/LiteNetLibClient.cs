@@ -35,7 +35,7 @@ namespace ONI_Together.Networking.Transport.Lan
         /// WaitForConnectionSuccess tell that apart from a connection that is still pending.
         /// </summary>
         private static bool _connectedEventDelivered;
-        private static int _connectionGeneration;
+        private static bool _connectAttemptInFlight;
         private const string HostIdentityHandshake = "ONI_TOGETHER_HOST";
 
         // LAN Discovery
@@ -151,13 +151,17 @@ namespace ONI_Together.Networking.Transport.Lan
 
             StopLanDiscovery();
 
+            if (_connectAttemptInFlight)
+                return;
+
             if (_client != null && _client.IsRunning)
             {
                 if (_serverPeer != null && _serverPeer.ConnectionState == ConnectionState.Connected)
                     return;
+
+                Disconnect();
             }
 
-            int generation = ++_connectionGeneration;
             int timeout = Configuration.Instance.Client.TimeoutSeconds;
             ulong clientId = NetworkConfig.GetLocalID();
 
@@ -191,55 +195,63 @@ namespace ONI_Together.Networking.Transport.Lan
             _connectedEventDelivered = false;
             _serverPeer = _client.Connect(ip, port, writer);
 
-            CoroutineRunner.RunOne(WaitForConnectionSuccess(timeout, generation));
+            _connectAttemptInFlight = true;
+            CoroutineRunner.RunOne(WaitForConnectionSuccess(timeout));
         }
 
-        private IEnumerator WaitForConnectionSuccess(int timeoutSeconds, int generation)
+        private IEnumerator WaitForConnectionSuccess(int timeoutSeconds)
         {
-            float startedAt = Time.realtimeSinceStartup;
-            float connectedWithoutEventSince = -1f;
-
-            while (Time.realtimeSinceStartup - startedAt < timeoutSeconds)
+            try
             {
-                if (generation != _connectionGeneration)
-                    yield break;
+                float startedAt = Time.realtimeSinceStartup;
+                float connectedWithoutEventSince = -1f;
 
-                if (_connectedEventDelivered && MultiplayerSession.InActiveSession)
-                    yield break;
-
-                if (!_connectedEventDelivered
-                    && _serverPeer != null
-                    && _serverPeer.ConnectionState == ConnectionState.Connected)
+                while (Time.realtimeSinceStartup - startedAt < timeoutSeconds)
                 {
-                    float now = Time.realtimeSinceStartup;
-                    // The transport is connected; only the event has not reached the mod. Give
-                    // PollEvents one more tick in case it is merely queued, then stop waiting for
-                    // it - the handler is the same one the event would have run.
-                    if (connectedWithoutEventSince < 0f)
-                        connectedWithoutEventSince = now;
-                    else if (now - connectedWithoutEventSince >= 1f)
-                    {
-                        DebugConsole.LogWarning($"[LiteNetLibClient] Peer has been Connected for {now - connectedWithoutEventSince:0.0}s ({now - startedAt:0.0}s since connect) but PeerConnectedEvent never arrived - completing the connection from the poll loop.");
-                        OnConnectedToServer(_serverPeer);
+                    if (!_connectAttemptInFlight)
                         yield break;
+
+                    if (_connectedEventDelivered && MultiplayerSession.InActiveSession)
+                        yield break;
+
+                    if (!_connectedEventDelivered
+                        && _serverPeer != null
+                        && _serverPeer.ConnectionState == ConnectionState.Connected)
+                    {
+                        float now = Time.realtimeSinceStartup;
+                        // The transport is connected; only the event has not reached the mod. Give
+                        // PollEvents one more tick in case it is merely queued, then stop waiting for
+                        // it - the handler is the same one the event would have run.
+                        if (connectedWithoutEventSince < 0f)
+                            connectedWithoutEventSince = now;
+                        else if (now - connectedWithoutEventSince >= 1f)
+                        {
+                            DebugConsole.LogWarning($"[LiteNetLibClient] Peer has been Connected for {now - connectedWithoutEventSince:0.0}s ({now - startedAt:0.0}s since connect) but PeerConnectedEvent never arrived - completing the connection from the poll loop.");
+                            OnConnectedToServer(_serverPeer);
+                            yield break;
+                        }
                     }
+
+                    yield return null;
                 }
 
-                yield return new WaitForSecondsRealtime(0.5f);
+                if (!_connectAttemptInFlight)
+                    yield break;
+
+                if (!_connectedEventDelivered || !MultiplayerSession.InActiveSession)
+                {
+                    DebugConsole.LogError("[LiteNetLibClient] Connection timed out before host identity exchange completed.");
+                    OnConnectionFailed?.Invoke();
+                    Disconnect();
+                    OnReturnToMenu?.Invoke(
+                        STRINGS.UI.MP_OVERLAY.CLIENT.LITENETLIB.CONNECTION_FAILED,
+                        STRINGS.UI.MP_OVERLAY.CLIENT.LITENETLIB.CONNECTION_FAILED_DESC
+                    );
+                }
             }
-
-            if (generation != _connectionGeneration)
-                yield break;
-
-            if (!_connectedEventDelivered || !MultiplayerSession.InActiveSession)
+            finally
             {
-                DebugConsole.LogError("[LiteNetLibClient] Connection timed out before host identity exchange completed.");
-                OnConnectionFailed?.Invoke();
-                Disconnect();
-                OnReturnToMenu?.Invoke(
-                    STRINGS.UI.MP_OVERLAY.CLIENT.LITENETLIB.CONNECTION_FAILED,
-                    STRINGS.UI.MP_OVERLAY.CLIENT.LITENETLIB.CONNECTION_FAILED_DESC
-                );
+                _connectAttemptInFlight = false;
             }
         }
 
@@ -277,6 +289,7 @@ namespace ONI_Together.Networking.Transport.Lan
         {
             using var _ = Profiler.Scope();
 
+            _connectAttemptInFlight = false;
             _serverPeer = null;
             _connectedEventDelivered = false;
             MultiplayerSession.SetHost(Utils.NilUlong());
@@ -368,7 +381,7 @@ namespace ONI_Together.Networking.Transport.Lan
         {
             using var _ = Profiler.Scope();
 
-            ++_connectionGeneration;
+            _connectAttemptInFlight = false;
 
             if (_listener != null)
             {

@@ -75,7 +75,6 @@ namespace ONI_Together.Networking
 				return false;
 			player.Connection = null;
 			ConnectedPlayers.Remove(playerId);
-			KnownPlayerNames.Remove(playerId);
 			ReadyManager.RemoveParticipant(playerId);
 			RefreshAllPlayerCursors();
 			return true;

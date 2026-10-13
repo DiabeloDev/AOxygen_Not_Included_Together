@@ -1,6 +1,5 @@
 ﻿using ONI_Together.DebugTools;
 using ONI_Together.Misc;
-using ONI_Together.Networking.States;
 using ONI_Together.Patches.ToolPatches;
 using ONI_Together.Networking.OxySync.Components;
 using ONI_Together.UI;
@@ -257,11 +256,6 @@ namespace ONI_Together.Networking.Transport.Steamworks
 					//MultiplayerSession.ConnectedPlayers[user] = new MultiplayerPlayer(user);
                     MultiplayerSession.ConnectedPlayers.Add(userId, new MultiplayerPlayer(user.m_SteamID));
                 }
-				if (userId == MultiplayerSession.HostUserID &&
-					MultiplayerSession.ConnectedPlayers.TryGetValue(userId, out var hostPlayer))
-				{
-					hostPlayer.readyState = ClientReadyState.Ready;
-				}
 
 				DebugConsole.Log($"[SteamLobby] {name} joined the lobby.");
 				OxySyncChat.AddSystemMessage(string.Format(STRINGS.UI.MP_CHATWINDOW.CHAT_CLIENT_JOINED, name));

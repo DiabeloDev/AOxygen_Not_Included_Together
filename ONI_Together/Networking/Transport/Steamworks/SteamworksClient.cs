@@ -1,14 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading.Tasks;
 using ONI_Together.DebugTools;
-using ONI_Together.Menus;
 using ONI_Together.Misc;
 using ONI_Together.Networking.Packets.Architecture;
-using ONI_Together.Networking.Packets.Handshake;
 using Shared.Profiling;
 using ONI_Together.Networking.States;
 using Shared;
@@ -189,7 +184,7 @@ namespace ONI_Together.Networking.Transport.Steam
                 && _intentionalDisconnects.Remove(data.m_hConn.m_HSteamNetConnection))
                 return;
 
-            if (Connection.HasValue && data.m_hConn.m_HSteamNetConnection != Connection.Value.m_HSteamNetConnection)
+            if (!Connection.HasValue || data.m_hConn.m_HSteamNetConnection != Connection.Value.m_HSteamNetConnection)
                 return;
 
             switch (state)

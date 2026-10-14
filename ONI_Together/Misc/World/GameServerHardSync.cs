@@ -1,80 +1,107 @@
-﻿using ONI_Together.DebugTools;
-using ONI_Together.Menus;
+using ONI_Together.DebugTools;
 using ONI_Together.Networking.Packets.Core;
 using ONI_Together.Networking.Packets.World;
+using System;
 using System.Collections;
 using Shared.Profiling;
-using UnityEngine;
 
 namespace ONI_Together.Networking
 {
 	public static class GameServerHardSync
 	{
+		private const float ClientTrafficDrainSeconds = 0.15f;
+		private static byte[] _synchronizationSnapshot;
+
 		public static bool hardSyncDoneThisCycle = false;
-		private static bool hardSyncInProgress = false;
-		private static int numberOfClientsAtTimeOfSync = 0;
-
-		public static bool IsHardSyncInProgress
-		{
-
-			get
-			{
-				return hardSyncInProgress;
-			}
-			set
-			{
-				hardSyncInProgress = value;
-			}
-		}
+		private static bool _consumeDailyUse;
+		public static bool IsHardSyncInProgress => ReadyManager.IsSynchronizing;
+		internal static byte[] SynchronizationSnapshot => _synchronizationSnapshot;
 
 		public static void PerformHardSync(bool consumeDailyUse = false)
 		{
 			using var _ = Profiler.Scope();
 
-			if (hardSyncInProgress)
+			if (!MultiplayerSession.IsHost)
 			{
-				DebugConsole.Log("[HardSync] A hard sync is already in progress.");
+				DebugConsole.LogWarning("[HardSync] Only the host can start synchronization.");
 				return;
 			}
 
-			SpeedControlScreen.Instance?.Pause(false); // Pause the game
-			MultiplayerOverlay.Show(STRINGS.UI.MP_OVERLAY.SYNC.HARDSYNC_INPROGRESS);
-
-            numberOfClientsAtTimeOfSync = MultiplayerSession.ConnectedPlayers.Count;
-			var packet = new HardSyncPacket();
-			PacketSender.SendToAllClients(packet);
-
-			// Hide other player cursors as they are in hard sync and it'll reappear when they start sending packets again
-			foreach (PlayerCursor cursor in MultiplayerSession.PlayerCursors.Values)
+			if (ReadyManager.IsSynchronizing)
 			{
-				cursor.SetVisibility(false);
+				DebugConsole.Log("[HardSync] Synchronization is already in progress.");
+				return;
 			}
 
-			DebugConsole.Log($"[HardSync] Starting hard sync for {numberOfClientsAtTimeOfSync} client(s)...");
-			CoroutineRunner.RunOne(HardSyncCoroutine(consumeDailyUse));
+			if (!ReadyManager.BeginSynchronization())
+			{
+				DebugConsole.LogWarning("[HardSync] Could not start synchronization.");
+				return;
+			}
+
+			if (SpeedControlScreen.Instance?.IsPaused != true)
+				SpeedControlScreen.Instance?.TogglePause();
+
+			_consumeDailyUse = consumeDailyUse;
+			ulong synchronizationId = ReadyManager.ActiveSynchronizationId;
+			hardSyncDoneThisCycle = false;
+			int clientCount = 0;
+			foreach (ulong participant in ReadyManager.SynchronizationParticipants)
+			{
+				clientCount++;
+				PacketSender.SendToPlayer(participant, new HardSyncPacket { SynchronizationId = synchronizationId });
+			}
+
+			foreach (PlayerCursor cursor in MultiplayerSession.PlayerCursors.Values)
+				cursor.SetVisibility(false);
+
+			ReadyManager.StartGameplayDrain(ClientTrafficDrainSeconds);
+			DebugConsole.Log($"[HardSync] Synchronization started for {clientCount} client(s).");
+			CoroutineRunner.RunOne(DrainClientTrafficThenTransfer(synchronizationId));
+			ReadyManager.RefreshReadyState();
 		}
 
-		private static IEnumerator HardSyncCoroutine(bool consumeDailyUse = false)
+		private static IEnumerator DrainClientTrafficThenTransfer(ulong synchronizationId)
 		{
-			using var _ = Profiler.Scope();
+			while (ReadyManager.IsCurrentSynchronization(synchronizationId)
+				&& UnityEngine.Time.realtimeSinceStartup < ReadyManager.GameplayDrainUntil)
+				yield return null;
 
-			hardSyncInProgress = true;
+			if (!ReadyManager.IsCurrentSynchronization(synchronizationId))
+				yield break;
 
-            ReadyManager.MarkAllAsUnready();
-            SaveFileRequestPacket.SendSaveFileToAll();
-            ReadyManager.RefreshScreen(); // Bring up ready screen for host
+			// Close gameplay admission before yielding so admitted dispatches finish before capture.
+			yield return null;
+			if (!ReadyManager.IsCurrentSynchronization(synchronizationId))
+				yield break;
 
-            int fileSize = SaveHelper.GetWorldSave().Length;
-			int chunkSize = SaveHelper.SAVEFILE_CHUNKSIZE_KB * 1024;
-			int chunkCount = Mathf.CeilToInt(fileSize / (float)chunkSize);
-			float estimatedTransferDuration = chunkCount * SaveFileRequestPacket.SAVE_DATA_SEND_DELAY;
-			yield return new WaitForSecondsRealtime(estimatedTransferDuration * numberOfClientsAtTimeOfSync);
+			try
+			{
+				_synchronizationSnapshot = SaveHelper.GetWorldSave();
+				SaveFileRequestPacket.SendSaveFileToAll(_synchronizationSnapshot, synchronizationId);
+				ReadyManager.RefreshReadyState();
+			}
+			catch (Exception ex)
+			{
+				DebugConsole.LogError($"[HardSync] Failed to capture or start the synchronization snapshot transfer: {ex}");
+				ReadyManager.ResetSynchronizationState();
+			}
+		}
 
-			hardSyncDoneThisCycle = consumeDailyUse;
-            hardSyncInProgress = false;
-			// With the ready state I do not think this is needed anymore
-			//SpeedControlScreen.Instance?.Unpause(false);
-			//MultiplayerOverlay.Close();
+		internal static void OnSynchronizationCompleted()
+		{
+			if (_consumeDailyUse)
+				hardSyncDoneThisCycle = true;
+
+			_consumeDailyUse = false;
+			_synchronizationSnapshot = null;
+		}
+
+		internal static void ResetSynchronizationState()
+		{
+			_consumeDailyUse = false;
+			SaveFileRequestPacket.ClearPendingSynchronizationTransfers();
+			_synchronizationSnapshot = null;
 		}
 	}
 }

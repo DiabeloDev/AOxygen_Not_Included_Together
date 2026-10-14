@@ -47,6 +47,7 @@ namespace ONI_Together
             base.OnLoad(harmony);
 
             ModAssets.LoadAssetBundles();
+			EnsurePersistentUserId();
 
             string logPath = System.IO.Path.Combine(Application.dataPath, "../ONI_Together_Log.txt");
 
@@ -241,7 +242,26 @@ namespace ONI_Together
 #endif
 		}
 
-        public override void OnAllModsLoaded(Harmony harmony, IReadOnlyList<Mod> mods)
+		private void EnsurePersistentUserId()
+		{
+			using var _ = Profiler.Scope();
+
+			var config = Configuration.Instance.Network;
+			if (config.PersistentUserId != 0)
+				return;
+
+			ulong persistentUserId;
+			do
+			{
+				persistentUserId = BitConverter.ToUInt64(Guid.NewGuid().ToByteArray(), 0);
+			}
+			while (persistentUserId == 0);
+
+			config.PersistentUserId = persistentUserId;
+			Configuration.Instance.Save();
+		}
+
+		public override void OnAllModsLoaded(Harmony harmony, IReadOnlyList<Mod> mods)
         {
 	        using var _ = Profiler.Scope();
 

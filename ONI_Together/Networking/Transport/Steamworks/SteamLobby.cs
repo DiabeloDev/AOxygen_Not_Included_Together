@@ -1,8 +1,5 @@
 ﻿using ONI_Together.DebugTools;
-using ONI_Together.Menus;
 using ONI_Together.Misc;
-using ONI_Together.Networking.Components;
-using ONI_Together.Networking.Packets.Architecture;
 using ONI_Together.Patches.ToolPatches;
 using ONI_Together.Networking.OxySync.Components;
 using ONI_Together.UI;
@@ -12,7 +9,6 @@ using System.Collections.Generic;
 using Shared;
 using Shared.Profiling;
 using UnityEngine;
-using static STRINGS.GAMEPLAY_EVENTS;
 
 namespace ONI_Together.Networking.Transport.Steamworks
 {
@@ -273,9 +269,7 @@ namespace ONI_Together.Networking.Transport.Steamworks
 					(stateChange & EChatMemberStateChange.k_EChatMemberStateChangeKicked) != 0)
 			{
 				if (MultiplayerSession.ConnectedPlayers.TryGetValue(userId, out var p))
-					p.Connection = null;
-
-				MultiplayerSession.ConnectedPlayers.Remove(userId);
+					MultiplayerSession.RemoveConnectedPlayer(userId, p.Connection);
 
 				RefreshLobbyMembers();
 				DebugConsole.Log($"[SteamLobby] {name} left the lobby.");

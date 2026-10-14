@@ -8,12 +8,14 @@ namespace ONI_Together.Networking.Packets.World
 	public class TcpFallbackRequestPacket : IPacket, IAllowedWithoutWorldPacket
 	{
 		public ulong Requester;
+		public ulong SynchronizationId;
 
 		public void Serialize(BinaryWriter writer)
 		{
 			using var _ = Profiler.Scope();
 
 			writer.Write(Requester);
+			writer.Write(SynchronizationId);
 		}
 
 		public void Deserialize(BinaryReader reader)
@@ -21,6 +23,7 @@ namespace ONI_Together.Networking.Packets.World
 			using var _ = Profiler.Scope();
 
 			Requester = reader.ReadUInt64();
+			SynchronizationId = reader.ReadUInt64();
 		}
 
 		public void OnDispatched()
@@ -31,7 +34,7 @@ namespace ONI_Together.Networking.Packets.World
 				return;
 
 			DebugConsole.Log($"[TcpFallback] Client {Requester} requested UDP fallback for save transfer");
-			SaveFileRequestPacket.SendSaveFileViaUdp(Requester);
+			ReadyManager.RetrySynchronizationTransfer(Requester, SynchronizationId, true);
 		}
 	}
 }

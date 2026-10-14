@@ -1,6 +1,5 @@
 using ONI_Together.DebugTools;
 using ONI_Together.Networking.Packets.World;
-using Steamworks;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -56,6 +55,17 @@ namespace ONI_Together.Networking
             return $"{clientID}_{transferId}";
         }
 
+        public static void ClearTransfers()
+        {
+            ActiveTransfers.Clear();
+        }
+
+        internal static void CancelClient(ulong clientId)
+        {
+            foreach (string key in ActiveTransfers.Where(pair => pair.Value.ClientID == clientId).Select(pair => pair.Key).ToArray())
+                ActiveTransfers.Remove(key);
+        }
+
         /// <summary>
         /// Register new transfer and track chunks
         /// </summary>
@@ -93,6 +103,9 @@ namespace ONI_Together.Networking
         {
             using var _ = Profiler.Scope();
 
+            if (!SaveFileRequestPacket.TryGetSynchronizationId(transferId, out ulong synchronizationId)
+                || !ReadyManager.IsLoadingParticipant(clientID, synchronizationId))
+                return;
             string key = GetTransferKey(clientID, transferId);
             if (!ActiveTransfers.TryGetValue(key, out var transfer))
             {
@@ -104,11 +117,8 @@ namespace ONI_Together.Networking
             {
                 transfer.ChunkAcked[chunkIndex] = true;
                 transfer.LastActivity = System.DateTime.Now;
-
-                // TCP-like ACK processing - tolerant to out-of-order ACKs
                 DebugConsole.Log($"[TransferManager] ACK {chunkIndex} received (highest sequential before: {transfer.HighestAckReceived})");
 
-                // Always tries to advance HighestAckReceived based on confirmed contiguous chunks
                 while (transfer.HighestAckReceived + 1 < transfer.TotalChunks &&
                        transfer.ChunkAcked[transfer.HighestAckReceived + 1])
                 {
@@ -117,7 +127,6 @@ namespace ONI_Together.Networking
 
                 DebugConsole.Log($"[TransferManager] Updated highest sequential ACK: {transfer.HighestAckReceived}/{transfer.TotalChunks}");
 
-                // Check if transfer is complete
                 if (transfer.HighestAckReceived + 1 == transfer.TotalChunks)
                 {
                     DebugConsole.Log($"[TransferManager] ✅ Transfer {transferId} to {clientID} COMPLETE - all chunks ACKed");
@@ -137,6 +146,12 @@ namespace ONI_Together.Networking
 
             foreach (var transfer in ActiveTransfers.Values.ToArray())
             {
+                if (!SaveFileRequestPacket.TryGetSynchronizationId(transfer.TransferId, out ulong synchronizationId)
+                    || !ReadyManager.IsLoadingParticipant(transfer.ClientID, synchronizationId))
+                {
+                    ActiveTransfers.Remove(GetTransferKey(transfer.ClientID, transfer.TransferId));
+                    continue;
+                }
                 // Check chunks that were sent but haven't received ACK for more than 5 seconds
                 for (int i = 0; i <= Math.Min(transfer.HighestAckReceived + 10, transfer.TotalChunks - 1); i++) // Only check window near last ACK
                 {
@@ -174,6 +189,7 @@ namespace ONI_Together.Networking
                 var chunkPacket = new SaveFileChunkPacket
                 {
                     FileName = transfer.FileName,
+                    TransferId = transfer.TransferId,
                     Offset = offset,
                     TotalSize = transfer.FileData.Length,
                     Chunk = chunkData

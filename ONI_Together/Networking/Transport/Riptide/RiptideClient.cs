@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Net;
 using Riptide;
 using Riptide.Utils;
 using ONI_Together.DebugTools;
@@ -13,9 +12,7 @@ using UnityEngine;
 using System.Collections;
 using ONI_Together.Networking.OxySync.Components;
 using ONI_Together.Networking.States;
-using ONI_Together.UI;
 using Shared;
-using Steamworks;
 using static ONI_Together.STRINGS.UI.MP_OVERLAY;
 
 namespace ONI_Together.Networking.Transport.Lan
@@ -23,8 +20,7 @@ namespace ONI_Together.Networking.Transport.Lan
     public class RiptideClient : TransportClient
     {
         private static Client _client;
-        public bool IsLoadingReconnect { get; set; } = false;
-
+        private static bool _connectAttemptInFlight;
         public static Client Client
         {
             get { return _client; }
@@ -60,10 +56,15 @@ namespace ONI_Together.Networking.Transport.Lan
         {
             using var _ = Profiler.Scope();
 
+            if (_connectAttemptInFlight)
+                return;
+
             if (_client != null)
             {
                 if (!_client.IsNotConnected)
                     return;
+
+                CleanupRiptide();
             }
 
             MultiplayerSession.ServerIp = ip;
@@ -77,6 +78,7 @@ namespace ONI_Together.Networking.Transport.Lan
             _client.ClientConnected += OnOtherClientConnected;
             _client.ClientDisconnected += OnOtherClientDisconnected;
             DebugConsole.Log($"Connecting to {ip}:{port}");
+            _connectAttemptInFlight = true;
             CoroutineRunner.RunOne(WaitForConnectionSuccess(timeout));
             _client.Connect($"{ip}:{port}", useMessageHandlers: false);
             _client.TimeoutTime = Configuration.Instance.Client.TimeoutSeconds * 1000;
@@ -87,7 +89,6 @@ namespace ONI_Together.Networking.Transport.Lan
             using var _ = Profiler.Scope();
 
             RemoveClientFromList(e.Id);
-            //MultiplayerSession.RemovePlayerCursor(e.Id);
             MultiplayerSession.RefreshAllPlayerCursors();
         }
 
@@ -124,10 +125,10 @@ namespace ONI_Together.Networking.Transport.Lan
             OnClientConnected.Invoke();
             MultiplayerSession.SetHost(1); // Host's client is always 1
             MultiplayerSession.InActiveSession = true;
-            PacketHandler.readyToProcess = true;
 
             // The clients MultiplayerSession.ConnectedPlayers should only ever contain the host
             MultiplayerPlayer host = new MultiplayerPlayer(1);
+            host.readyState = ClientReadyState.Ready;
             host.Connection = conn;
             MultiplayerSession.ConnectedPlayers.Add(1, host);
 
@@ -149,9 +150,8 @@ namespace ONI_Together.Networking.Transport.Lan
             OnClientDisconnected?.Invoke();
             MultiplayerSession.ConnectedPlayers.Clear();
 
-            DisconnectReason disconnectReason = e.Reason;
             var (reason, message) = GetDisconnectInfo(e);
-            switch (disconnectReason) {
+            switch (e.Reason) {
                 case DisconnectReason.Disconnected:
                     // Initiated by client do nothing
                     break;
@@ -171,7 +171,10 @@ namespace ONI_Together.Networking.Transport.Lan
                 return;
 
             if (_client.IsNotConnected)
+            {
+                CleanupRiptide();
                 return;
+            }
 
             _client.Disconnect();
         }
@@ -267,7 +270,6 @@ namespace ONI_Together.Networking.Transport.Lan
 
             string ip = MultiplayerSession.ServerIp;
             int port = MultiplayerSession.ServerPort;
-            Disconnect();
             ConnectToHost(ip, port);
         }
 
@@ -313,16 +315,10 @@ namespace ONI_Together.Networking.Transport.Lan
 
             ClientList.Remove(id);
 
-            if (id == CLIENT_ID && GameClient.State == ClientState.LoadingWorld)
-            {
-                IsLoadingReconnect = true;
-            }
-            else
-            {
-                string name = MultiplayerSession.KnownPlayerNames.TryGetValue(id, out var cached) ? cached : $"Player {id}";
-                OxySyncChat.AddSystemMessage(string.Format(STRINGS.UI.MP_CHATWINDOW.CHAT_CLIENT_LEFT, name));
-                Utils.PauseSimOnPlayerLeft();
-			}
+            string name = MultiplayerSession.KnownPlayerNames.TryGetValue(id, out var cached) ? cached : $"Player {id}";
+            OxySyncChat.AddSystemMessage(string.Format(STRINGS.UI.MP_CHATWINDOW.CHAT_CLIENT_LEFT, name));
+            Utils.PauseSimOnPlayerLeft();
+
 			var boxedId = Boxed<ulong>.Get(id);
 			Game.Instance?.Trigger(MP_HASHES.OnPlayerLeft, boxedId);
             boxedId.Release();
@@ -457,76 +453,82 @@ namespace ONI_Together.Networking.Transport.Lan
         IEnumerator WaitForConnectionSuccess(int timeout)
         {
             using var _ = Profiler.Scope();
-
-            float timer = 0f;
-
-            bool wasSuccessful = false;
-            while (timer < timeout)
+            try
             {
-                _client?.Update(); // Update needs to happen during this process so that the client can acknowledge the connection and trigger the Connected event
-                if (_client != null && _client.IsConnected)
+                float startedAt = Time.realtimeSinceStartup;
+
+                while (Time.realtimeSinceStartup - startedAt < timeout)
                 {
-                    DebugConsole.Log("[LanClient] Connection successful");
-                    MultiplayerOverlay.Close();
-                    wasSuccessful = true;
-                    yield break;
+                    if (_client == null)
+                        yield break;
+
+                    _client?.Update();
+
+                    if (_client.IsConnected)
+                    {
+                        DebugConsole.Log("[LanClient] Connection successful");
+                        MultiplayerOverlay.Close();
+                        yield break;
+                    }
+
+                    if (GameClient.State != ClientState.Connecting)
+                        yield break;
+
+                    yield return null;
                 }
 
-                timer += Time.deltaTime;
-                yield return null;
-            }
+                if (_client == null || _client.IsConnected)
+                    yield break;
 
-            if (!wasSuccessful)
-            {
+                if (GameClient.State != ClientState.Connecting)
+                    yield break;
+
+                DebugConsole.LogWarning("[LanClient] Connection timed out");
+                OnConnectionFailed?.Invoke();
+
                 CleanupRiptide();
-
-                MultiplayerOverlay.Show(STRINGS.UI.MP_OVERLAY.CLIENT.CONNECTION_FAILED);
-                yield return new WaitForSeconds(3f);
-                MultiplayerOverlay.Close();
-            } else
+                NetworkConfig.TransportClient.OnReturnToMenu.Invoke(
+                    CLIENT.RIPTIDE.CONNECTION_FAILED,
+                    CLIENT.RIPTIDE.CONNECTION_FAILED_DESC
+                );
+            }
+            finally
             {
-                yield return null;
+                _connectAttemptInFlight = false;
             }
         }
 
-        void CleanupRiptide()
+        private void CleanupRiptide()
         {
             using var _ = Profiler.Scope();
 
-            // Timeout reached — double check we didn't connect at the last frame
-            if (_client != null && !_client.IsConnected)
+            if (_client == null)
+                return;
+
+            try
             {
-                DebugConsole.LogWarning("[LanClient] Connection timed out");
+                _client.Connected -= OnConnectedToServer;
+                _client.Disconnected -= OnDisconnectedFromServer;
+                _client.MessageReceived -= OnMessageRecievedFromServer;
+                _client.ClientConnected -= OnOtherClientConnected;
+                _client.ClientDisconnected -= OnOtherClientDisconnected;
+                _client.Disconnect();
 
-                /*
-                if (MultiplayerSession.IsClient)
-                {
-                    // Display lost connection to host and return to the main menu
-                    NetworkConfig.TransportClient.OnReturnToMenu.Invoke("Connection lost.", "Timed out");
-                }
-                */
-
-                try
-                {
-                    _client.Disconnect();
-
-                    _client.Connected -= OnConnectedToServer;
-                    _client.Disconnected -= OnDisconnectedFromServer;
-                    _client.MessageReceived -= OnMessageRecievedFromServer;
-                    _client.ClientConnected -= OnOtherClientConnected;
-                    _client.ClientDisconnected -= OnOtherClientDisconnected;
-
-                    MultiplayerSession.ServerIp = "127.0.0.1";
-                    MultiplayerSession.ServerPort = 7777;
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning($"[LanClient] Error during timeout cleanup: {ex}");
-                }
-
+                MultiplayerSession.ServerIp = "127.0.0.1";
+                MultiplayerSession.ServerPort = 7777;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[LanClient] Error during timeout cleanup: {ex}");
+            }
+            finally
+            {
                 _client = null;
             }
 
+            CLIENT_ID = Utils.NilUlong();
+            ClientList.Clear();
+            MultiplayerSession.ConnectedPlayers.Clear();
             MultiplayerSession.HostUserID = Utils.NilUlong();
             MultiplayerSession.InActiveSession = false;
         }

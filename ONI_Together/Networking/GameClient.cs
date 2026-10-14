@@ -1,21 +1,19 @@
 ﻿using ONI_Together.DebugTools;
 using ONI_Together.Menus;
 using ONI_Together.Misc;
+using ONI_Together.Misc.World;
 using ONI_Together.Networking.Components;
-using ONI_Together.Networking.Packets.Architecture;
 using ONI_Together.Networking.Packets.Handshake;
+using ONI_Together.Networking.Packets.Core;
 using ONI_Together.Networking.Packets.World;
 using Shared.Profiling;
 using ONI_Together.Networking.States;
-using ONI_Together.Networking.Transport.Steamworks;
 using ONI_Together.Patches.ToolPatches;
 using Shared;
 using Shared.Helpers;
 using Steamworks;
-using System;
 using System.Collections;
 using System.Linq;
-using System.Runtime.InteropServices;
 using UnityEngine;
 
 namespace ONI_Together.Networking
@@ -25,70 +23,158 @@ namespace ONI_Together.Networking
 
 		private static ClientState _state = ClientState.Disconnected;
 		public static ClientState State => _state;
+		public static ulong ActiveSynchronizationId { get; private set; }
+		private static bool _loadSubmitted;
 
-		private static bool _pollingPaused = false;
+		internal static bool IsCurrentSynchronization(ulong synchronizationId) =>
+			MultiplayerSession.IsClient && _state == ClientState.LoadingWorld
+			&& synchronizationId != 0 && synchronizationId == ActiveSynchronizationId;
 
-		private static CachedConnectionInfo? _cachedConnectionInfo = null;
+		internal static bool CanReceiveSynchronizationSave(ulong synchronizationId) =>
+			IsCurrentSynchronization(synchronizationId) && !_loadSubmitted;
 
-		public static bool IsHardSyncInProgress = false;
-		private static bool _modVerificationSent = false;
-
-		// Auto-reconnect state
-		private static bool _autoReconnecting = false;
-		private static int _reconnectAttempt = 0;
-		private const int MAX_RECONNECT_ATTEMPTS = 5;
-		private const float RECONNECT_BASE_DELAY = 1f;
-
-
-		private struct CachedConnectionInfo
+		internal static void ResetSynchronizationState()
 		{
-			public ulong HostSteamID;
-			public string ServerIp;
-			public int ServerPort;
-
-			public CachedConnectionInfo(ulong id)
-			{
-				HostSteamID = id;
-			}
-
-			public CachedConnectionInfo(string ip, int port)
-            {
-                ServerIp = ip;
-                ServerPort = port;
-            }
-
-        }
-
-		/// <summary>
-		/// Returns true if we have cached connection info from a previous session
-		/// (used to determine if we need to reconnect after world load)
-		/// </summary>
-		public static bool HasCachedConnection()
-		{
-			using var _ = Profiler.Scope();
-
-			return _cachedConnectionInfo.HasValue;
+			ActiveSynchronizationId = 0;
+			_loadSubmitted = false;
+			SaveChunkAssembler.Clear();
 		}
 
-		/// <summary>
-		/// Clears the cached connection info after successful reconnection or on error
-		/// </summary>
-		public static void ClearCachedConnection()
+		internal static void RequestSynchronizationTransferRetry(ulong synchronizationId, bool forceGeneric = false)
 		{
-			using var _ = Profiler.Scope();
+			if (!CanReceiveSynchronizationSave(synchronizationId))
+			{
+				DebugConsole.LogWarning($"[Synchronization] Ignored transfer retry for inactive/submitted sync {synchronizationId}.");
+				return;
+			}
 
-			_cachedConnectionInfo = null;
+			if (forceGeneric)
+			{
+				var packet = new TcpFallbackRequestPacket
+				{
+					Requester = MultiplayerSession.LocalUserID,
+					SynchronizationId = synchronizationId
+				};
+				PacketSender.SendToHost(packet);
+				return;
+			}
+
+			var normalRetryPacket = new SaveFileRequestPacket
+			{
+				Requester = MultiplayerSession.LocalUserID,
+				SynchronizationId = synchronizationId
+			};
+			PacketSender.SendToHost(normalRetryPacket);
 		}
 
-		public static void SetState(ClientState newState)
+		internal static bool SubmitSynchronizationSave(ulong synchronizationId, WorldSave save, bool delay)
+		{
+			if (!CanReceiveSynchronizationSave(synchronizationId))
+			{
+				DebugConsole.LogWarning($"[Synchronization] Ignored duplicate/stale save completion for sync {synchronizationId}.");
+				return false;
+			}
+			_loadSubmitted = true;
+			SaveChunkAssembler.Clear();
+			CoroutineRunner.RunOne(LoadSynchronizationSave());
+			return true;
+
+			IEnumerator LoadSynchronizationSave()
+			{
+				if (delay)
+					yield return new WaitForSecondsRealtime(1f);
+				if (!IsCurrentSynchronization(synchronizationId))
+					yield break;
+				SaveHelper.RequestWorldLoad(save, () => IsCurrentSynchronization(synchronizationId));
+			}
+		}
+
+		private static bool _cancellingConnectionAttempt = false;
+
+		public static bool IsHardSyncInProgress => _state == ClientState.LoadingWorld;
+		public static bool Handle(ClientEvent evt)
 		{
 			using var _ = Profiler.Scope();
 
-			if (_state != newState)
+			ClientState nextState;
+			switch (evt)
 			{
-				_state = newState;
-				DebugConsole.Log($"[GameClient] State changed to: {_state}");
+				case ClientEvent.BeginConnect:
+					if (_state == ClientState.Disconnected)
+						nextState = ClientState.Connecting;
+					else
+						return RejectTransition(evt, $"Cannot begin connecting while in {_state} state.");
+					break;
+				case ClientEvent.ConnectionFailed:
+					if (_state == ClientState.Disconnected)
+						return ApplyStateTransition(_state, evt);
+					if (_state == ClientState.Connecting)
+						nextState = ClientState.Disconnected;
+					else
+						return RejectTransition(evt, $"Cannot fail a connection attempt while in {_state} state.");
+					break;
+				case ClientEvent.CancelConnect:
+					if (_state == ClientState.Disconnected)
+						return ApplyStateTransition(_state, evt);
+					if (_state == ClientState.Connecting)
+						nextState = ClientState.Disconnected;
+					else
+						return RejectTransition(evt, $"Cannot cancel a connection attempt while in {_state} state.");
+					break;
+				case ClientEvent.TransportConnected:
+					if (_state == ClientState.Connecting)
+						nextState = ClientState.Connected;
+					else
+						return RejectTransition(evt, $"Cannot complete transport connection while in {_state} state.");
+					break;
+				case ClientEvent.WorldLoadStarted:
+					if (_state == ClientState.LoadingWorld)
+						return ApplyStateTransition(_state, evt);
+					if (_state == ClientState.Connected || _state == ClientState.InGame)
+						nextState = ClientState.LoadingWorld;
+					else
+						return RejectTransition(evt, $"Cannot start a world load while in {_state} state.");
+					break;
+				case ClientEvent.SynchronizationCompleted:
+					if (_state == ClientState.LoadingWorld)
+						nextState = ClientState.InGame;
+					else
+						return RejectTransition(evt, $"Cannot complete synchronization while in {_state} state.");
+					break;
+				case ClientEvent.TransportDisconnected:
+					if (_state == ClientState.Disconnected)
+						return ApplyStateTransition(_state, evt);
+					if (_state == ClientState.Connecting || _state == ClientState.Connected ||
+						_state == ClientState.LoadingWorld || _state == ClientState.InGame)
+						nextState = ClientState.Disconnected;
+					else
+						return RejectTransition(evt, $"Cannot disconnect while in {_state} state.");
+					break;
+				default:
+					return RejectTransition(evt, $"Unknown client event {evt}.");
 			}
+
+			return ApplyStateTransition(nextState, evt);
+		}
+
+		private static bool ApplyStateTransition(ClientState nextState, ClientEvent evt)
+		{
+			if (nextState == ClientState.Disconnected)
+				ResetSynchronizationState();
+			if (_state != nextState)
+			{
+				ClientState previousState = _state;
+				_state = nextState;
+				DebugConsole.Log($"[GameClientLifecycle] {previousState} -> {_state} via {evt}");
+			}
+
+			return true;
+		}
+
+		private static bool RejectTransition(ClientEvent evt, string reason)
+		{
+			DebugConsole.LogWarning($"[GameClientLifecycle] Rejected {evt} while in {_state}. Reason: {reason}");
+			return false;
 		}
 
 		public static void Init()
@@ -96,10 +182,29 @@ namespace ONI_Together.Networking
 			using var _ = Profiler.Scope();
 
 			// I fucking hate this, maybe replace this with hashes?
-			NetworkConfig.TransportClient.OnClientDisconnected = () => SetState(ClientState.Disconnected);
-			NetworkConfig.TransportClient.OnClientConnected = () => SetState(ClientState.Connected);
+			NetworkConfig.TransportClient.OnClientDisconnected = () =>
+			{
+				if (_cancellingConnectionAttempt)
+					return;
+
+				ClientState previousState = _state;
+				Handle(previousState == ClientState.Connecting ? ClientEvent.ConnectionFailed : ClientEvent.TransportDisconnected);
+			};
+			NetworkConfig.TransportClient.OnConnectionFailed = () =>
+			{
+				if (!_cancellingConnectionAttempt)
+					Handle(ClientEvent.ConnectionFailed);
+			};
+			NetworkConfig.TransportClient.OnClientConnected = () =>
+			{
+				if (!_cancellingConnectionAttempt)
+					Handle(ClientEvent.TransportConnected);
+			};
 			NetworkConfig.TransportClient.OnContinueConnectionFlow = () => ContinueConnectionFlow();
-			NetworkConfig.TransportClient.OnReturnToMenu = (reason, message) => CoroutineRunner.RunOne(ShowMessageAndReturnToTitle(reason, message));
+			NetworkConfig.TransportClient.OnReturnToMenu = (reason, message) =>
+			{
+				CoroutineRunner.RunOne(ShowMessageAndReturnToTitle(reason, message, skipIfReconnected: true));
+			};
 			NetworkConfig.TransportClient.OnRequestStateOrReturn = () =>
 			{
                 PacketSender.SendToHost(GameStateRequestPacket.CreateClientRequest(MultiplayerSession.LocalUserID));
@@ -115,9 +220,6 @@ namespace ONI_Together.Networking
 
             Init();
 
-            // Reset mod verification for new connection attempts
-            _modVerificationSent = false;
-
 			if (showLoadingScreen)
 			{
 				string hostName = "uknown host";
@@ -132,8 +234,18 @@ namespace ONI_Together.Networking
 					MultiplayerOverlay.Show(string.Format(STRINGS.UI.MP_OVERLAY.CLIENT.CONNECTING_TO_HOST, hostName));
 			}
 
-			SetState(ClientState.Connecting);
-			NetworkConfig.TransportClient.ConnectToHost(ip, port);
+			if (!Handle(ClientEvent.BeginConnect))
+				return;
+
+			try
+			{
+				NetworkConfig.TransportClient.ConnectToHost(ip, port);
+			}
+			catch
+			{
+				Handle(ClientEvent.ConnectionFailed);
+				throw;
+			}
 		}
 
 		public static void Disconnect()
@@ -141,6 +253,28 @@ namespace ONI_Together.Networking
 			using var _ = Profiler.Scope();
 
 			NetworkConfig.TransportClient.Disconnect();
+		}
+
+		public static void CancelConnectionAttempt()
+		{
+			using var _ = Profiler.Scope();
+
+			if (_state != ClientState.Connecting)
+				return;
+
+			_cancellingConnectionAttempt = true;
+			try
+			{
+				NetworkConfig.TransportClient.Disconnect();
+			}
+			finally
+			{
+				_cancellingConnectionAttempt = false;
+
+				Handle(ClientEvent.CancelConnect);
+
+				MultiplayerOverlay.Close();
+			}
 		}
 
 		public static void ReconnectToSession()
@@ -154,20 +288,17 @@ namespace ONI_Together.Networking
 		{
 			using var _ = Profiler.Scope();
 
-			if (_pollingPaused)
-				return;
-
 			NetworkConfig.TransportClient.Update();
 
 			switch (State)
 			{
 				case ClientState.Connected:
+				case ClientState.LoadingWorld:
 				case ClientState.InGame:
 					NetworkConfig.TransportClient.OnMessageRecieved();
 					break;
 				case ClientState.Connecting:
 				case ClientState.Disconnected:
-				case ClientState.Error:
 				default:
 					break;
 			}
@@ -183,7 +314,7 @@ namespace ONI_Together.Networking
 			{
 				DebugConsole.LogWarning($"[GameClient] Host protocol validation failed: {protocolReason} | {protocolMessage}");
 				Disconnect();
-				NetworkConfig.TransportClient.OnReturnToMenu.Invoke(protocolReason, protocolMessage);
+				CoroutineRunner.RunOne(ShowMessageAndReturnToTitle(protocolReason, protocolMessage));
 				return;
 			}
 
@@ -290,11 +421,10 @@ namespace ONI_Together.Networking
 			App.LoadScene("frontend");
 		}
 
-        private static void ContinueConnectionFlow()
+		private static void ContinueConnectionFlow()
 		{
 			using var _ = Profiler.Scope();
 
-			// CRITICAL: Only execute on client, never on server
 			if (MultiplayerSession.IsHost)
 			{
 				DebugConsole.Log("[GameClient] ContinueConnectionFlow called on host - ignoring");
@@ -302,67 +432,19 @@ namespace ONI_Together.Networking
 			}
 
 			DebugConsole.Log($"[GameClient] ContinueConnectionFlow - IsInMenu: {Utils.IsInMenu()}, IsInGame: {Utils.IsInGame()}, HardSyncInProgress: {IsHardSyncInProgress}");
-
 			ReadyManager.SendReadyStatusPacket(ClientReadyState.Unready);
 
 			if (Utils.IsInMenu())
 			{
 				DebugConsole.Log("[GameClient] Client is in menu - requesting save file or sending ready status");
-
-				// CRITICAL: Enable packet processing BEFORE requesting save file
-				// Otherwise, host packets will be discarded!
-				PacketHandler.readyToProcess = true;
-				DebugConsole.Log("[GameClient] PacketHandler.readyToProcess = true (menu)");
-
-				// Show overlay with localized message
 				MultiplayerOverlay.Show(string.Format(STRINGS.UI.MP_OVERLAY.CLIENT.WAITING_FOR_PLAYER, SteamFriends.GetFriendPersonaName(MultiplayerSession.HostUserID.AsCSteamID())));
-				if (!IsHardSyncInProgress)
-				{
-					DebugConsole.Log("[GameClient] Requesting save file from host");
-					var packet = new SaveFileRequestPacket
-					{
-						Requester = MultiplayerSession.LocalUserID
-					};
-					PacketSender.SendToHost(packet);
-				}
-				else
-				{
-					DebugConsole.Log("[GameClient] Hard sync in progress, sending ready status");
-					// Tell the host we're ready
-					ReadyManager.SendReadyStatusPacket(ClientReadyState.Ready);
-				}
+				DebugConsole.Log("[GameClient] Requesting synchronized save file from host");
+				PacketSender.SendToHost(new SynchronizationRequestPacket { Requester = MultiplayerSession.LocalUserID });
 			}
 			else if (Utils.IsInGame())
 			{
-				DebugConsole.Log("[GameClient] Client is in game - treating as reconnection");
-
-				// We're in game already. Consider this a reconnection
-				SetState(ClientState.InGame);
-
-				// CRÍTICO: Habilitar processamento de pacotes
-				PacketHandler.readyToProcess = true;
-				DebugConsole.Log("[GameClient] PacketHandler.readyToProcess = true");
-
-				if (IsHardSyncInProgress)
-				{
-					IsHardSyncInProgress = false;
-					DebugConsole.Log("[GameClient] Cleared HardSyncInProgress flag");
-				}
-
-				Game.Instance?.Trigger(MP_HASHES.GameClient_OnConnectedInGame);
-                ReadyManager.SendReadyStatusPacket(ClientReadyState.Ready);
-				MultiplayerSession.CreateConnectedPlayerCursors();
-
-				//CursorManager.Instance.AssignColor();
-				SelectToolPatch.UpdateColor();
-
-				// Fechar overlay se reconectou com sucesso
-				MultiplayerOverlay.Close();
-
-				// Reset reconnect state on successful connection
-				ResetReconnectState();
-
-				DebugConsole.Log("[GameClient] Reconnection setup complete");
+				DebugConsole.Log("[GameClient] Client reconnected while in game; requesting host synchronization");
+				PacketSender.SendToHost(new SynchronizationRequestPacket { Requester = MultiplayerSession.LocalUserID });
 			}
 			else
 			{
@@ -370,57 +452,62 @@ namespace ONI_Together.Networking
 			}
 		}
 
-		private static IEnumerator AutoReconnectCoroutine()
+		public static bool BeginSynchronization(ulong synchronizationId)
 		{
-			if (_autoReconnecting) yield break;
-			_autoReconnecting = true;
-			_reconnectAttempt++;
+			using var _ = Profiler.Scope();
 
-			float delay = Mathf.Min(RECONNECT_BASE_DELAY * Mathf.Pow(2, _reconnectAttempt - 1), 30f);
-			DebugConsole.Log($"[GameClient] Auto-reconnect attempt {_reconnectAttempt}/{MAX_RECONNECT_ATTEMPTS} in {delay}s");
-			MultiplayerOverlay.Show($"Reconnecting... attempt {_reconnectAttempt}/{MAX_RECONNECT_ATTEMPTS}");
-
-			yield return new WaitForSecondsRealtime(delay);
-
-			if (!Utils.IsInGame())
+			if (synchronizationId == 0)
 			{
-				DebugConsole.Log("[GameClient] No longer in game, aborting reconnect");
-				_autoReconnecting = false;
-				_reconnectAttempt = 0;
-				yield break;
+				DebugConsole.LogWarning($"[Synchronization] Ignored invalid HardSync {synchronizationId}.");
+				return false;
 			}
-
-			try
+			if (_state == ClientState.LoadingWorld)
 			{
-				ReconnectToSession();
+				DebugConsole.LogWarning($"[Synchronization] Rejected HardSync {synchronizationId} while loading {ActiveSynchronizationId}.");
+				return false;
 			}
-			catch (Exception ex)
-			{
-				DebugConsole.LogError($"[GameClient] Reconnect attempt {_reconnectAttempt} failed: {ex}");
-			}
+			if (!Handle(ClientEvent.WorldLoadStarted))
+				return false;
 
-			_autoReconnecting = false;
+			ActiveSynchronizationId = synchronizationId;
+			_loadSubmitted = false;
+			SaveChunkAssembler.Clear();
+			SpeedControlScreen.Instance?.Pause(false);
+			return true;
 		}
 
-		public static void ResetReconnectState()
+		public static void OnWorldSpawnComplete()
 		{
-			_autoReconnecting = false;
-			_reconnectAttempt = 0;
+			using var _ = Profiler.Scope();
+
+			if (_state != ClientState.LoadingWorld || !_loadSubmitted)
+				return;
+
+			ReadyManager.SendReadyStatusPacket(ClientReadyState.Ready);
 		}
 
-		private static IEnumerator ShowMessageAndReturnToTitle(string reason = "", string message = "")
+		public static bool CompleteSynchronization(ulong synchronizationId)
 		{
-			// Auto-reconnect if still in game and under max attempts
-			//if (Utils.IsInGame() && _reconnectAttempt < MAX_RECONNECT_ATTEMPTS)
-			//{
-			//	CoroutineRunner.RunOne(AutoReconnectCoroutine());
-			//	yield break;
-			//}
+			using var _ = Profiler.Scope();
 
-			// Reset on final failure
-			_reconnectAttempt = 0;
-			_autoReconnecting = false;
+			if (!IsCurrentSynchronization(synchronizationId))
+			{
+				DebugConsole.LogWarning($"[Synchronization] Ignored AllReady for inactive sync {synchronizationId}.");
+				return false;
+			}
 
+			if (!Handle(ClientEvent.SynchronizationCompleted))
+				return false;
+			ActiveSynchronizationId = 0;
+			SaveChunkAssembler.Clear();
+			Game.Instance?.Trigger(MP_HASHES.GameClient_OnConnectedInGame);
+			MultiplayerSession.CreateConnectedPlayerCursors();
+			SelectToolPatch.UpdateColor();
+			return true;
+		}
+
+		private static IEnumerator ShowMessageAndReturnToTitle(string reason = "", string message = "", bool skipIfReconnected = false)
+		{
 			string displayText;
 			if (string.IsNullOrEmpty(reason) && string.IsNullOrEmpty(message))
 			{
@@ -440,8 +527,9 @@ namespace ONI_Together.Networking
 			}
 
 			MultiplayerOverlay.Show(displayText);
-			//SaveHelper.CaptureWorldSnapshot();
 			yield return new WaitForSecondsRealtime(3f);
+			if (skipIfReconnected && State != ClientState.Disconnected)
+				yield break;
 			//PauseScreen.TriggerQuitGame(); // Force exit to frontend, getting a crash here
 			if (Utils.IsInGame())
 			{
@@ -450,55 +538,8 @@ namespace ONI_Together.Networking
 			App.LoadScene("frontend");
 
 			MultiplayerOverlay.Close();
-			NetworkIdentityRegistry.Clear();
-			NetworkConfig.Stop();
-		}
-
-		public static void CacheCurrentServer()
-		{
-			using var _ = Profiler.Scope();
-
-			if(NetworkConfig.IsSteamConfig())
-			{
-                if (MultiplayerSession.HostUserID != Utils.NilUlong())
-                {
-                    _cachedConnectionInfo = new CachedConnectionInfo(
-                            MultiplayerSession.HostUserID
-                    );
-                }
-            }
-			else if(NetworkConfig.IsLanConfig())
-			{
-				_cachedConnectionInfo = new CachedConnectionInfo(
-                    MultiplayerSession.ServerIp,
-                    MultiplayerSession.ServerPort
-                );
-            }
-		}
-
-		public static void ReconnectFromCache()
-		{
-			using var _ = Profiler.Scope();
-
-			if (_cachedConnectionInfo.HasValue)
-			{
-				if(NetworkConfig.IsSteamConfig())
-				{
-                    DebugConsole.Log($"[GameClient] Reconnecting to cached server: {_cachedConnectionInfo.Value.HostSteamID}");
-                    var hostId = _cachedConnectionInfo.Value.HostSteamID;
-                    _cachedConnectionInfo = null; // Clear cache to prevent re-triggering
-                    MultiplayerSession.HostUserID = hostId;
-                    ConnectToHost(false);
-                }
-				else if(NetworkConfig.IsLanConfig())
-				{
-                    DebugConsole.Log($"[GameClient] Reconnecting to cached server: {_cachedConnectionInfo.Value.ServerPort}:{_cachedConnectionInfo.Value.ServerPort}");
-                    var ip = _cachedConnectionInfo.Value.ServerIp;
-                    var port = _cachedConnectionInfo.Value.ServerPort;
-                    _cachedConnectionInfo = null; // Clear cache to prevent re-triggering
-                    ConnectToHost(false, ip, port);
-                }
-			}
+            NetworkIdentityRegistry.Clear();
+            NetworkConfig.Stop();
 		}
 	}
 }

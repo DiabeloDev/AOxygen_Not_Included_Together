@@ -41,11 +41,16 @@ namespace ONI_Together.Networking.Packets.World
         {
             using var _ = Profiler.Scope();
 
+            if (!SaveFileRequestPacket.TryGetSynchronizationId(TransferId, out ulong synchronizationId)
+                || !GameClient.CanReceiveSynchronizationSave(synchronizationId))
+                return;
             try
             {
                 // INTEGRITY TEST: Try to deserialize payload back to SaveFileChunkPacket
                 // If this succeeds = ALL bytes arrived intact!
                 var reconstructedChunk = DeserializeSaveFileChunk(PayloadBytes);
+                if (reconstructedChunk.TransferId != TransferId)
+                    throw new InvalidDataException("Save chunk identity does not match its transfer envelope.");
 
                 DebugConsole.Log($"[SecureTransfer] ✅ Packet {SequenceNumber} integrity verified - {reconstructedChunk.Chunk.Length} bytes");
 
@@ -80,6 +85,7 @@ namespace ONI_Together.Networking.Packets.World
 
                 // This will throw if ANY bytes are missing/corrupted:
                 chunk.FileName = reader.ReadString();     // Needs valid length header + string chars
+                chunk.TransferId = reader.ReadString();
                 chunk.Offset = reader.ReadInt32();        // Needs exactly 4 bytes
                 chunk.TotalSize = reader.ReadInt32();     // Needs exactly 4 bytes
                 int chunkLength = reader.ReadInt32();     // Needs exactly 4 bytes
@@ -106,6 +112,7 @@ namespace ONI_Together.Networking.Packets.World
             using (var writer = new BinaryWriter(ms))
             {
                 writer.Write(packet.FileName);
+                writer.Write(packet.TransferId);
                 writer.Write(packet.Offset);
                 writer.Write(packet.TotalSize);
                 writer.Write(packet.Chunk.Length);
@@ -126,11 +133,8 @@ namespace ONI_Together.Networking.Packets.World
             DebugConsole.LogWarning($"[SecureTransfer] Requesting resend due to corrupted packet {sequenceNumber} in transfer {transferId}");
 
             // Trigger existing resend mechanism
-            var requestPacket = new SaveFileRequestPacket
-            {
-                Requester = MultiplayerSession.LocalUserID
-            };
-            PacketSender.SendToHost(requestPacket);
+            if (SaveFileRequestPacket.TryGetSynchronizationId(transferId, out ulong synchronizationId))
+                GameClient.RequestSynchronizationTransferRetry(synchronizationId);
         }
 
         /// <summary>

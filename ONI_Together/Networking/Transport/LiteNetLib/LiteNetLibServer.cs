@@ -2,13 +2,10 @@ using LiteNetLib;
 using LiteNetLib.Utils;
 using ONI_Together.DebugTools;
 using ONI_Together.Misc;
-using ONI_Together.Misc.World;
 using ONI_Together.Networking.OxySync.Components;
 using ONI_Together.Networking.Packets.Architecture;
 using ONI_Together.Networking.States;
 using ONI_Together.Networking.Transfer;
-using ONI_Together.UI;
-using Shared;
 using Shared.Profiling;
 using System;
 using System.Collections.Concurrent;
@@ -21,6 +18,8 @@ namespace ONI_Together.Networking.Transport.Lan
 {
     public class LiteNetLibServer : TransportServer
     {
+        private const string ClientIdentityHandshake = "ONI_TOGETHER";
+        private const string HostIdentityHandshake = "ONI_TOGETHER_HOST";
         private static NetManager _server;
         private static EventBasedNetListener _listener;
 
@@ -30,14 +29,9 @@ namespace ONI_Together.Networking.Transport.Lan
         private readonly ConcurrentQueue<(ulong clientId, byte[] data)> _incomingPackets = new ConcurrentQueue<(ulong, byte[])>();
 
         public static NetManager ServerInstance => _server;
-        public static ulong CLIENT_ID { get; private set; } = 1;
-
         public bool IsRunning => _server != null && _server.IsRunning;
         public int ConnectedClientCount => _server != null ? _server.ConnectedPeersCount : 0;
         public TcpFileTransferServer TcpTransfer => _tcpTransfer;
-
-        public void MarkClientLoading(ulong clientId) { }
-        public bool ConsumeReconnectFromLoad(ulong clientId) { return false; }
 
         public List<ulong> ClientList { get; internal set; } = new List<ulong>();
 
@@ -70,6 +64,13 @@ namespace ONI_Together.Networking.Transport.Lan
             string ip = Configuration.Instance.Host.LanSettings.Ip;
             int port = Configuration.Instance.Host.LanSettings.Port;
             int maxClients = Configuration.Instance.Host.MaxLobbySize;
+            ulong hostId = NetworkConfig.GetLocalID();
+            if (hostId == 0)
+            {
+                DebugConsole.LogError("[LiteNetLibServer] Cannot start with an empty persistent host ID.");
+                OnError?.Invoke();
+                return;
+            }
 
             _listener = new EventBasedNetListener();
             _listener.ConnectionRequestEvent += OnConnectionRequest;
@@ -112,61 +113,63 @@ namespace ONI_Together.Networking.Transport.Lan
             }
 
             // Register Local Host
-            CLIENT_ID = 1;
-            MultiplayerSession.SetHost(1);
+            MultiplayerSession.SetHost(hostId);
             MultiplayerSession.InActiveSession = true;
 
             ClientList.Clear();
-            ClientList.Add(1);
+            ClientList.Add(hostId);
 
-            if (!MultiplayerSession.ConnectedPlayers.TryGetValue(1, out var hostPlayer))
+            if (!MultiplayerSession.ConnectedPlayers.TryGetValue(hostId, out var hostPlayer))
             {
-                hostPlayer = new MultiplayerPlayer(1)
+                hostPlayer = new MultiplayerPlayer(hostId)
                 {
                     PlayerName = Utils.GetLocalPlayerName(),
                     Connection = null
                 };
-                MultiplayerSession.ConnectedPlayers[1] = hostPlayer;
+                MultiplayerSession.ConnectedPlayers[hostId] = hostPlayer;
             }
             else
             {
                 hostPlayer.PlayerName = Utils.GetLocalPlayerName();
                 hostPlayer.Connection = null;
             }
-            MultiplayerSession.KnownPlayerNames[1] = hostPlayer.PlayerName;
+            hostPlayer.readyState = ClientReadyState.Ready;
+            MultiplayerSession.KnownPlayerNames[hostId] = hostPlayer.PlayerName;
 
             OxySyncChat.AddSystemMessage(string.Format(STRINGS.UI.MP_CHATWINDOW.CHAT_CLIENT_JOINED, hostPlayer.PlayerName));
         }
 
         private void OnConnectionRequest(ConnectionRequest request)
         {
-            if (_server.ConnectedPeersCount < Configuration.Instance.Host.MaxLobbySize)
+            if (_server.ConnectedPeersCount >= Configuration.Instance.Host.MaxLobbySize)
             {
-                try
-                {
-                    string key = request.Data.GetString();
-                    if (key == "ONI_TOGETHER")
-                    {
-                        var peer = request.Accept();
-                        if (peer != null)
-                        {
-                            ulong assignedId = (ulong)peer.Id + 2;
-                            _peersByClientId[assignedId] = peer;
-                            _clientIdByPeerId[peer.Id] = assignedId;
-                        }
-                        return;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    DebugConsole.LogWarning("[LiteNetLibServer] Error reading connection request: " + ex.Message);
-                }
-
                 request.Reject();
+                return;
             }
-            else
+
+            if (!request.Data.TryGetString(out string magic)
+                || magic != ClientIdentityHandshake
+                || !request.Data.TryGetULong(out ulong clientId)
+                || clientId == 0
+                || request.Data.AvailableBytes != 0)
             {
+                DebugConsole.LogWarning($"[LiteNetLibServer] Rejected malformed connection request from {request.RemoteEndPoint}.");
                 request.Reject();
+                return;
+            }
+
+            if (clientId == NetworkConfig.GetLocalID() || _peersByClientId.ContainsKey(clientId))
+            {
+                DebugConsole.LogWarning($"[LiteNetLibServer] Rejected duplicate persistent client ID {clientId} from {request.RemoteEndPoint}.");
+                request.Reject();
+                return;
+            }
+
+            var peer = request.Accept();
+            if (peer != null)
+            {
+                _peersByClientId[clientId] = peer;
+                _clientIdByPeerId[peer.Id] = clientId;
             }
         }
 
@@ -200,10 +203,15 @@ namespace ONI_Together.Networking.Transport.Lan
 
             if (!_clientIdByPeerId.TryGetValue(peer.Id, out ulong clientId))
             {
-                clientId = (ulong)peer.Id + 2;
-                _peersByClientId[clientId] = peer;
-                _clientIdByPeerId[peer.Id] = clientId;
+                DebugConsole.LogError($"[LiteNetLibServer] Accepted peer {peer.Id} has no client ID mapping; disconnecting.");
+                peer.Disconnect();
+                return;
             }
+
+            var identityWriter = new NetDataWriter();
+            identityWriter.Put(HostIdentityHandshake);
+            identityWriter.Put(NetworkConfig.GetLocalID());
+            peer.Send(identityWriter, DeliveryMethod.ReliableOrdered);
 
             if (!MultiplayerSession.ConnectedPlayers.TryGetValue(clientId, out var player))
             {
@@ -211,6 +219,7 @@ namespace ONI_Together.Networking.Transport.Lan
                 MultiplayerSession.ConnectedPlayers[clientId] = player;
             }
             player.Connection = peer;
+            player.ProtocolVerified = false;
 
             if (!ClientList.Contains(clientId))
                 ClientList.Add(clientId);
@@ -224,19 +233,17 @@ namespace ONI_Together.Networking.Transport.Lan
 
             if (_clientIdByPeerId.TryGetValue(peer.Id, out ulong clientId))
             {
+                if (!_peersByClientId.TryGetValue(clientId, out var currentPeer) || !ReferenceEquals(currentPeer, peer))
+                    return;
                 _peersByClientId.Remove(clientId);
                 _clientIdByPeerId.Remove(peer.Id);
                 ClientList.Remove(clientId);
 
-                if (MultiplayerSession.ConnectedPlayers.TryGetValue(clientId, out var player))
+                if (MultiplayerSession.RemoveConnectedPlayer(clientId, peer))
                 {
-                    player.Connection = null;
-                    MultiplayerSession.ConnectedPlayers.Remove(clientId);
                     DebugConsole.Log("[LiteNetLibServer] Player " + clientId + " disconnected. Reason: " + disconnectInfo.Reason);
                 }
 
-                ReadyManager.RefreshReadyState();
-                MultiplayerSession.RefreshAllPlayerCursors();
             }
         }
 
@@ -274,7 +281,6 @@ namespace ONI_Together.Networking.Transport.Lan
 
             while (_incomingPackets.TryDequeue(out var _)) { }
 
-            CLIENT_ID = Utils.NilUlong();
             MultiplayerSession.HostUserID = Utils.NilUlong();
             MultiplayerSession.InActiveSession = false;
 
@@ -292,7 +298,7 @@ namespace ONI_Together.Networking.Transport.Lan
             _peersByClientId.Clear();
             _clientIdByPeerId.Clear();
             ClientList.Clear();
-            ClientList.Add(1);
+            ClientList.Add(NetworkConfig.GetLocalID());
         }
 
         public override void Update()
@@ -334,7 +340,7 @@ namespace ONI_Together.Networking.Transport.Lan
                 _peersByClientId.Remove(clientId);
                 _clientIdByPeerId.Remove(peer.Id);
                 ClientList.Remove(clientId);
-                MultiplayerSession.ConnectedPlayers.Remove(clientId);
+                MultiplayerSession.RemoveConnectedPlayer(clientId, peer);
                 DebugConsole.Log("[LiteNetLibServer] Kicked client: " + clientId);
             }
         }

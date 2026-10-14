@@ -69,6 +69,17 @@ namespace ONI_Together.Networking
 
 		public static readonly Dictionary<ulong, string> KnownPlayerNames = new Dictionary<ulong, string>();
 
+		internal static bool RemoveConnectedPlayer(ulong playerId, object connection)
+		{
+			if (!ConnectedPlayers.TryGetValue(playerId, out var player) || !Equals(player.Connection, connection))
+				return false;
+			player.Connection = null;
+			ConnectedPlayers.Remove(playerId);
+			ReadyManager.RemoveParticipant(playerId);
+			RefreshAllPlayerCursors();
+			return true;
+		}
+
 		[API_Method]
 		public static bool TryGetPlayerCursorPos(ulong playerId, out Vector3 cursorPos)
 		{
@@ -93,6 +104,7 @@ namespace ONI_Together.Networking
 		{
 			using var _ = Profiler.Scope();
 
+			ReadyManager.ResetSynchronizationState();
 			ConnectedPlayers.Clear();
 			KnownPlayerNames.Clear();
 			HostUserID = Utils.NilUlong();

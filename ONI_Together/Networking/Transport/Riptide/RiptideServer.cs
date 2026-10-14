@@ -110,10 +110,7 @@ namespace ONI_Together.Networking.Transport.Lan
             CLIENT_ID = _client.Id;
             //AddClientToList(CLIENT_ID);
             DebugConsole.Log("[RiptideServer] Host client connected to server!");
-            MultiplayerSession.SetHost(GetClientID());
-            MultiplayerSession.InActiveSession = true;
-            if (MultiplayerSession.ConnectedPlayers.TryGetValue(CLIENT_ID, out var hostPlayer))
-                hostPlayer.readyState = ClientReadyState.Ready;
+            MultiplayerSession.RegisterAsHost();
 
             string hostName = Utils.GetLocalPlayerName();
             OxySyncChat.AddSystemMessage(string.Format(STRINGS.UI.MP_CHATWINDOW.CHAT_CLIENT_JOINED, hostName));
@@ -123,11 +120,12 @@ namespace ONI_Together.Networking.Transport.Lan
         {
             using var _ = Profiler.Scope();
 
+            ulong previousClientId = CLIENT_ID;
             CLIENT_ID = Utils.NilUlong();
             //RemoveClientFromList(CLIENT_ID);
             DebugConsole.Log("[RiptideServer] Host client disconnected from server!");
-            MultiplayerSession.HostUserID = Utils.NilUlong();
-            MultiplayerSession.InActiveSession = false;
+            MultiplayerSession.UnregisterClient(previousClientId, null);
+            MultiplayerSession.UnRegisterAsHost(null);
         }
 
         private void ServerOnClientConnected(object sender, ServerConnectedEventArgs e)
@@ -135,25 +133,12 @@ namespace ONI_Together.Networking.Transport.Lan
             using var _ = Profiler.Scope();
 
             ulong clientId = e.Client.Id;
-            MultiplayerPlayer player;
-            if (!MultiplayerSession.ConnectedPlayers.TryGetValue(clientId, out player))
-            {
-                player = new MultiplayerPlayer(clientId);
-                MultiplayerSession.ConnectedPlayers.Add(clientId, player);
-            }
-            player.Connection = e.Client;
-            player.ProtocolVerified = false;
+            MultiplayerSession.RegisterClient(clientId, e.Client);
 
             e.Client.CanQualityDisconnect = false;
             e.Client.MaxSendAttempts = 30;
             e.Client.MaxAvgSendAttempts = 12;
             e.Client.AvgSendAttemptsResilience = 128;
-
-            if (clientId == CLIENT_ID || clientId == MultiplayerSession.HostUserID)
-            {
-                player.PlayerName = Utils.GetLocalPlayerName();
-                player.readyState = ClientReadyState.Ready;
-            }
 
             AddClientToList(e.Client.Id);
             DebugConsole.Log($"New client connected: {clientId}");
@@ -165,7 +150,7 @@ namespace ONI_Together.Networking.Transport.Lan
 
             ulong clientId = e.Client.Id;
 
-            if (MultiplayerSession.RemoveConnectedPlayer(clientId, e.Client))
+            if (MultiplayerSession.UnregisterClient(clientId, null, e.Client))
             {
                 RemoveClientFromList(clientId);
                 DebugConsole.Log($"Player {clientId} disconnected.");
@@ -299,8 +284,7 @@ namespace ONI_Together.Networking.Transport.Lan
                 }
             }
 
-            // Clear our session player list
-            MultiplayerSession.ConnectedPlayers.Clear();
+            MultiplayerSession.UnRegisterAsHost(null);
         }
 
         public override void OnMessageRecieved()
@@ -378,14 +362,18 @@ namespace ONI_Together.Networking.Transport.Lan
                 }
 
                 DebugConsole.Log($"[RiptideServer] Kicking client {clientId}");
-                _server.DisconnectClient(conn);
-
-                // OnClientDisconnected should disconnect so we shouldn't need to cleanup here
+                MultiplayerSession.UnregisterClient(clientId, CloseConnection, conn);
             }
             else
             {
                 DebugConsole.LogError($"[RiptideServer] KickClient: Invalid connection type for {clientId}");
             }
+        }
+
+        private void CloseConnection(object connection)
+        {
+            if (connection is Connection conn && !conn.IsNotConnected)
+                _server.DisconnectClient(conn);
         }
     }
 }

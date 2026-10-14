@@ -71,7 +71,7 @@ namespace ONI_Together.Networking.Transport.Steam
 
             _connectionStatusChangedCallback = Callback<SteamNetConnectionStatusChangedCallback_t>.Create(OnConnectionStatusChanged);
 
-            MultiplayerSession.InActiveSession = true;
+            MultiplayerSession.RegisterAsHost();
         }
 
         public override void Stop()
@@ -86,26 +86,12 @@ namespace ONI_Together.Networking.Transport.Steam
             if (ListenSocket.m_HSteamListenSocket != 0)
                 SteamNetworkingSockets.CloseListenSocket(ListenSocket);
 
-            MultiplayerSession.InActiveSession = false;
+            MultiplayerSession.UnRegisterAsHost(null);
         }
 
         public override void CloseConnections()
         {
-            using var _ = Profiler.Scope();
-
-            // Close all client connections and clean up
-            foreach (var player in MultiplayerSession.ConnectedPlayers.Values)
-            {
-                if (player.Connection != null)
-                {
-                    if (player.Connection is HSteamNetConnection)
-                    {
-                        var conn = (HSteamNetConnection) player.Connection;
-                        SteamNetworkingSockets.CloseConnection(conn, 0, "Shutdown", false);
-                    }
-                    player.Connection = null;
-                }
-            }
+            MultiplayerSession.UnRegisterAsHost(CreateCloseFunc("Shutdown"));
         }
 
         public override void Update()
@@ -263,15 +249,7 @@ namespace ONI_Together.Networking.Transport.Steam
         {
             using var _ = Profiler.Scope();
 
-            MultiplayerPlayer player;
-            if (!MultiplayerSession.ConnectedPlayers.TryGetValue(clientId.m_SteamID, out player))
-            {
-                player = new MultiplayerPlayer(clientId.m_SteamID);
-                MultiplayerSession.ConnectedPlayers.Add(clientId.m_SteamID, player);
-                //MultiplayerSession.ConnectedPlayers[clientId] = player;
-            }
-            player.Connection = conn;
-            player.ProtocolVerified = false;
+            MultiplayerSession.RegisterClient(clientId.m_SteamID, conn);
 
             DebugConsole.Log($"[GameServer] Connection to {clientId} fully established!");
             //SaveFileRequestPacket.SendSaveFile(clientId); // Old method
@@ -284,7 +262,7 @@ namespace ONI_Together.Networking.Transport.Steam
 
             SteamNetworkingSockets.CloseConnection(conn, 0, null, false);
 
-            MultiplayerSession.RemoveConnectedPlayer(clientId.m_SteamID, conn);
+            MultiplayerSession.UnregisterClient(clientId.m_SteamID, null, conn);
 
             DebugConsole.Log($"[GameServer] Connection closed for {clientId}");
 
@@ -314,13 +292,21 @@ namespace ONI_Together.Networking.Transport.Steam
             {
                 DebugConsole.Log($"[GameServer] Kicking client {clientId}");
 
-                SteamNetworkingSockets.CloseConnection(conn, 0, "Kicked by host", false);
-                MultiplayerSession.RemoveConnectedPlayer(clientId, conn);
+                MultiplayerSession.UnregisterClient(clientId, CreateCloseFunc("Kicked by host"), conn);
             }
             else
             {
                 DebugConsole.LogError($"[GameServer] KickClient: Invalid connection type for {clientId}");
             }
+        }
+
+        private static Action<object> CreateCloseFunc(string reason)
+        {
+            return connection =>
+            {
+                if (connection is HSteamNetConnection conn)
+                    SteamNetworkingSockets.CloseConnection(conn, 0, reason, false);
+            };
         }
     }
 }

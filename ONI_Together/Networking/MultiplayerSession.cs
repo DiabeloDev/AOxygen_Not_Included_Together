@@ -42,7 +42,7 @@ namespace ONI_Together.Networking
 		public static bool InActiveSession
 		{
 			get => _inActiveSession;
-			set
+			private set
 			{
 				_inActiveSession = value;
 				InSession = value;
@@ -58,7 +58,7 @@ namespace ONI_Together.Networking
 		public static int PlayerCount => IsHost ? ConnectedPlayers.Count : ConnectedPlayers.Count + 1;
 
 		[API_Method]
-		public static bool IsHost { get; set; } //HostUserID == LocalUserID;
+		public static bool IsHost { get; private set; } //HostUserID == LocalUserID;
 
 		[API_Method]
 		public static bool IsClient => InActiveSession && !IsHost;
@@ -69,15 +69,115 @@ namespace ONI_Together.Networking
 
 		public static readonly Dictionary<ulong, string> KnownPlayerNames = new Dictionary<ulong, string>();
 
+		public static event Action<ulong> OnClientConnected;
+		public static event Action<ulong> OnClientDisconnected;
+
+		public static void RegisterAsHost()
+		{
+			using var _ = Profiler.Scope();
+
+			var hostId = LocalUserID;
+			IsHost = true;
+			HostUserID = hostId;
+			InActiveSession = true;
+
+			if (!ConnectedPlayers.TryGetValue(hostId, out var hostPlayer))
+				hostPlayer = new MultiplayerPlayer(hostId);
+
+			hostPlayer.PlayerName = Utils.GetLocalPlayerName();
+			ReadyManager.SetPlayerReadyState(hostPlayer, ClientReadyState.Ready);
+			ConnectedPlayers[hostId] = hostPlayer;
+			KnownPlayerNames[hostId] = hostPlayer.PlayerName;
+		}
+
+		public static void UnRegisterAsHost(Action<object> close)
+		{
+			using var _ = Profiler.Scope();
+
+			InActiveSession = false;
+			HostUserID = Utils.NilUlong();
+			IsHost = false;
+			ClearConnectedPlayers(close);
+		}
+
+		public static void RegisterClient(ulong clientId, object connection)
+		{
+			using var _ = Profiler.Scope();
+
+			if (!ConnectedPlayers.TryGetValue(clientId, out var player))
+			{
+				player = new MultiplayerPlayer(clientId);
+				ConnectedPlayers.Add(clientId, player);
+			}
+
+			player.Connection = connection;
+			ReadyManager.SetPlayerReadyState(player, ClientReadyState.Unready);
+			if (clientId == LocalUserID)
+			{
+				player.PlayerName = Utils.GetLocalPlayerName();
+				ReadyManager.SetPlayerReadyState(player, ClientReadyState.Ready);
+				KnownPlayerNames[clientId] = player.PlayerName;
+			}
+
+			DebugConsole.Log($"[MultiplayerSession][REGISTER_CLIENT] client {clientId} with state {player.readyState}");
+			OnClientConnected?.Invoke(clientId);
+		}
+
+		public static bool UnregisterClient(ulong clientId, Action<object> close, object connection = null)
+		{
+			if (!ConnectedPlayers.TryGetValue(clientId, out var player))
+				return false;
+			if (connection != null && !Equals(player.Connection, connection))
+				return false;
+
+			close?.Invoke(player.Connection);
+			player.Connection = null;
+			ConnectedPlayers.Remove(clientId);
+			ReadyManager.RemoveParticipant(clientId);
+			OnClientDisconnected?.Invoke(clientId);
+			RefreshAllPlayerCursors();
+			DebugConsole.Log($"[MultiplayerSession][UNREGISTER_CLIENT] client {clientId} removed.");
+			return true;
+		}
+
 		internal static bool RemoveConnectedPlayer(ulong playerId, object connection)
 		{
-			if (!ConnectedPlayers.TryGetValue(playerId, out var player) || !Equals(player.Connection, connection))
-				return false;
-			player.Connection = null;
-			ConnectedPlayers.Remove(playerId);
-			ReadyManager.RemoveParticipant(playerId);
-			RefreshAllPlayerCursors();
-			return true;
+			return UnregisterClient(playerId, null, connection);
+		}
+
+		public static void OnConnectedToHost(ulong hostId, object connection)
+		{
+			using var _ = Profiler.Scope();
+
+			IsHost = false;
+			InActiveSession = true;
+			HostUserID = hostId;
+			ConnectedPlayers[hostId] = new MultiplayerPlayer(hostId) { Connection = connection };
+			KnownPlayerNames[LocalUserID] = Utils.GetLocalPlayerName();
+
+			DebugConsole.Log($"[MultiplayerSession] Connected to host {hostId}; Local player ID = {LocalUserID}");
+			Game.Instance?.Trigger(MP_HASHES.OnConnected);
+		}
+
+		public static void OnDisconnectedFromHost(Action<object> close)
+		{
+			using var _ = Profiler.Scope();
+
+			var previousHostId = HostUserID;
+			if (ConnectedPlayers.TryGetValue(previousHostId, out var hostPlayer))
+			{
+				close?.Invoke(hostPlayer.Connection);
+				hostPlayer.Connection = null;
+				ConnectedPlayers.Remove(previousHostId);
+				ReadyManager.RemoveParticipant(previousHostId);
+				OnClientDisconnected?.Invoke(previousHostId);
+			}
+
+			HostUserID = Utils.NilUlong();
+			InActiveSession = false;
+			IsHost = false;
+			DebugConsole.Log("[MultiplayerSession] Disconnected from host.");
+			Game.Instance?.Trigger(MP_HASHES.OnDisconnected);
 		}
 
 		[API_Method]
@@ -104,10 +204,12 @@ namespace ONI_Together.Networking
 		{
 			using var _ = Profiler.Scope();
 
+			ClearConnectedPlayers(null);
 			ReadyManager.ResetSynchronizationState();
-			ConnectedPlayers.Clear();
 			KnownPlayerNames.Clear();
 			HostUserID = Utils.NilUlong();
+			InActiveSession = false;
+			IsHost = false;
 			WorkProgressPatch.ClearTracking();
 			RemoteProgressRegistry.ClearAll();
 
@@ -122,6 +224,21 @@ namespace ONI_Together.Networking
 
 			HostUserID = host;
 			DebugConsole.Log($"[MultiplayerSession] Host set to: {host}");
+		}
+
+		public static void ClearConnectedPlayers(Action<object> close)
+		{
+			using var _ = Profiler.Scope();
+
+			foreach (var player in new List<MultiplayerPlayer>(ConnectedPlayers.Values))
+			{
+				OnClientDisconnected?.Invoke(player.PlayerId);
+				close?.Invoke(player.Connection);
+				player.Connection = null;
+			}
+
+			ConnectedPlayers.Clear();
+			ReadyManager.ResetSynchronizationState();
 		}
 
         /// <summary>
@@ -248,6 +365,12 @@ namespace ONI_Together.Networking
 
 			cursorGO = null;
 			return false;
+		}
+
+		public static void UnitTestOverrideConn(bool isHost, bool inActiveSession)
+		{
+			IsHost = isHost;
+			InActiveSession = inActiveSession;
 		}
 
 

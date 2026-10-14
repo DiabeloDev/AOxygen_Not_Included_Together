@@ -168,7 +168,6 @@ namespace ONI_Together.Networking.Transport.Lan
             MultiplayerSession.ServerIp = ip;
             MultiplayerSession.ServerPort = port;
             MultiplayerSession.SetHost(Utils.NilUlong());
-            MultiplayerSession.InActiveSession = false;
 
             _listener = new EventBasedNetListener();
             _listener.PeerConnectedEvent += OnConnectedToServer;
@@ -274,14 +273,10 @@ namespace ONI_Together.Networking.Transport.Lan
             if (!_connectedEventDelivered || MultiplayerSession.HostUserID == 0 || MultiplayerSession.InActiveSession)
                 return;
 
-            var host = new MultiplayerPlayer(MultiplayerSession.HostUserID) { Connection = _serverPeer };
-            MultiplayerSession.ConnectedPlayers[MultiplayerSession.HostUserID] = host;
-            MultiplayerSession.KnownPlayerNames[MultiplayerSession.LocalUserID] = Utils.GetLocalPlayerName();
-            MultiplayerSession.InActiveSession = true;
+            MultiplayerSession.OnConnectedToHost(MultiplayerSession.HostUserID, _serverPeer);
 
             OnClientConnected?.Invoke();
             DebugConsole.Log("[LiteNetLibClient] Connected to host! Assigned Client ID: " + MultiplayerSession.LocalUserID);
-            Game.Instance?.Trigger(MP_HASHES.OnConnected);
             OnRequestStateOrReturn?.Invoke();
         }
 
@@ -292,11 +287,8 @@ namespace ONI_Together.Networking.Transport.Lan
             _connectAttemptInFlight = false;
             _serverPeer = null;
             _connectedEventDelivered = false;
-            MultiplayerSession.SetHost(Utils.NilUlong());
-            MultiplayerSession.InActiveSession = false;
-
             OnClientDisconnected?.Invoke();
-            MultiplayerSession.ConnectedPlayers.Clear();
+            MultiplayerSession.OnDisconnectedFromHost(null);
 
             var (reason, message) = GetDisconnectInfo(disconnectInfo);
             DebugConsole.Log($"[LiteNetLibClient] Disconnected from server. Reason: {disconnectInfo.Reason} ({reason})");
@@ -367,6 +359,17 @@ namespace ONI_Together.Networking.Transport.Lan
                 return true;
             }
 
+            ulong currentHostId = MultiplayerSession.HostUserID;
+            if (currentHostId != 0)
+            {
+                if (currentHostId == hostId)
+                    return true;
+
+                DebugConsole.LogError("[LiteNetLibClient] Received conflicting host identity response.");
+                peer.Disconnect();
+                return true;
+            }
+
             MultiplayerSession.SetHost(hostId);
             CompleteConnectionAfterIdentityExchange();
             return true;
@@ -396,8 +399,10 @@ namespace ONI_Together.Networking.Transport.Lan
             _client?.Stop();
             _serverPeer = null;
             _connectedEventDelivered = false;
-            MultiplayerSession.SetHost(Utils.NilUlong());
-            MultiplayerSession.InActiveSession = false;
+            if (MultiplayerSession.InActiveSession)
+                MultiplayerSession.OnDisconnectedFromHost(null);
+            else
+                MultiplayerSession.SetHost(Utils.NilUlong());
             _client = null;
 
             while (_incomingPackets.TryDequeue(out var _)) { }

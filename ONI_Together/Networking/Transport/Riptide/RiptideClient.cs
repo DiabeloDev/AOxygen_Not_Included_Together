@@ -123,16 +123,7 @@ namespace ONI_Together.Networking.Transport.Lan
             ResetBandwidth();
 
             OnClientConnected.Invoke();
-            MultiplayerSession.SetHost(1); // Host's client is always 1
-            MultiplayerSession.InActiveSession = true;
-
-            // The clients MultiplayerSession.ConnectedPlayers should only ever contain the host
-            MultiplayerPlayer host = new MultiplayerPlayer(1);
-            host.readyState = ClientReadyState.Ready;
-            host.Connection = conn;
-            MultiplayerSession.ConnectedPlayers.Add(1, host);
-
-            MultiplayerSession.KnownPlayerNames[CLIENT_ID] = Utils.GetLocalPlayerName();
+            MultiplayerSession.OnConnectedToHost(1, conn); // Host's client is always 1
 
             DebugConsole.Log($"[Riptide] Connected to server with Client ID: {CLIENT_ID}");
 
@@ -148,7 +139,7 @@ namespace ONI_Together.Networking.Transport.Lan
             CLIENT_ID = Utils.NilUlong();
 
             OnClientDisconnected?.Invoke();
-            MultiplayerSession.ConnectedPlayers.Clear();
+            MultiplayerSession.OnDisconnectedFromHost(null);
 
             var (reason, message) = GetDisconnectInfo(e);
             switch (e.Reason) {
@@ -528,9 +519,10 @@ namespace ONI_Together.Networking.Transport.Lan
 
             CLIENT_ID = Utils.NilUlong();
             ClientList.Clear();
-            MultiplayerSession.ConnectedPlayers.Clear();
-            MultiplayerSession.HostUserID = Utils.NilUlong();
-            MultiplayerSession.InActiveSession = false;
+            if (MultiplayerSession.InActiveSession)
+                MultiplayerSession.OnDisconnectedFromHost(null);
+            else
+                MultiplayerSession.SetHost(Utils.NilUlong());
         }
 
         /*IEnumerator Handshake()

@@ -6,11 +6,133 @@ using ONI_Together.Networking.States;
 using ONI_Together.Networking.Transport.Steamworks;
 using Steamworks;
 using Shared.Profiling;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using ONI_Together.Networking.Packets.World;
 
 namespace ONI_Together.Networking
 {
 	public class ReadyManager
 	{
+		private const float HostOverlayCloseGraceSeconds = 1f;
+		private static readonly HashSet<ulong> Participants = new HashSet<ulong>();
+		public static ulong LastIssuedSynchronizationId { get; private set; }
+		public static ulong ActiveSynchronizationId { get; private set; }
+		internal static ulong[] SynchronizationParticipants => Participants.ToArray();
+
+		internal static bool IsCurrentSynchronization(ulong synchronizationId) =>
+			IsSynchronizing && synchronizationId != 0 && synchronizationId == ActiveSynchronizationId;
+
+		internal static bool IsLoadingParticipant(ulong clientId, ulong synchronizationId) =>
+			IsCurrentSynchronization(synchronizationId) && Participants.Contains(clientId)
+			&& MultiplayerSession.ConnectedPlayers.TryGetValue(clientId, out var player)
+			&& player.Connection != null && player.ProtocolVerified && player.readyState == ClientReadyState.Loading;
+
+		internal static void RequestSynchronization(ulong requester)
+		{
+			if (!MultiplayerSession.IsHost)
+				return;
+			if (!MultiplayerSession.ConnectedPlayers.TryGetValue(requester, out var player)
+				|| requester == MultiplayerSession.HostUserID || player.Connection == null || !player.ProtocolVerified)
+			{
+				DebugConsole.LogWarning($"[Synchronization] Invalid requester {requester}.");
+				return;
+			}
+			if (IsSynchronizing)
+			{
+				if (Participants.Contains(requester))
+					return;
+				DebugConsole.LogWarning($"[Synchronization] Rejecting late join from {requester}.");
+				NetworkConfig.TransportServer?.KickClient(requester);
+				return;
+			}
+			GameServerHardSync.PerformHardSync();
+		}
+
+		internal static void RetrySynchronizationTransfer(ulong requester, ulong synchronizationId, bool forceGeneric)
+		{
+			if (!MultiplayerSession.IsHost)
+				return;
+			if (!IsLoadingParticipant(requester, synchronizationId))
+			{
+				DebugConsole.LogWarning($"[Synchronization] Rejected retry from {requester} for sync {synchronizationId}.");
+				return;
+			}
+			byte[] snapshot = GameServerHardSync.SynchronizationSnapshot;
+			if (snapshot == null)
+			{
+				DebugConsole.LogWarning($"[Synchronization] Snapshot for sync {synchronizationId} is not yet available.");
+				return;
+			}
+			SaveFileRequestPacket.SendSaveFile(requester, SaveHelper.WorldName + ".sav", snapshot, synchronizationId, forceGeneric);
+		}
+
+		internal static void RemoveParticipant(ulong clientId)
+		{
+			if (!Participants.Remove(clientId))
+				return;
+			SaveFileRequestPacket.CancelTransfer(clientId);
+			RefreshReadyState();
+		}
+
+		public static bool IsSynchronizing => ActiveSynchronizationId != 0;
+		internal static float GameplayDrainUntil { get; private set; }
+
+		internal static void ResetSynchronizationState()
+		{
+			if (IsSynchronizing)
+			{
+				foreach (MultiplayerPlayer player in MultiplayerSession.ConnectedPlayers.Values)
+				{
+					if (player.PlayerId == MultiplayerSession.HostUserID)
+						continue;
+
+					if (player.readyState == ClientReadyState.Loading)
+						player.readyState = ClientReadyState.Unready;
+				}
+			}
+
+			ActiveSynchronizationId = 0;
+			Participants.Clear();
+			GameplayDrainUntil = 0f;
+			GameServerHardSync.ResetSynchronizationState();
+		}
+
+		public static bool BeginSynchronization()
+		{
+			using var _ = Profiler.Scope();
+
+			if (!MultiplayerSession.IsHost || IsSynchronizing)
+				return false;
+
+			ActiveSynchronizationId = checked(++LastIssuedSynchronizationId);
+			Participants.Clear();
+
+			foreach (MultiplayerPlayer player in MultiplayerSession.ConnectedPlayers.Values)
+			{
+				if (player.PlayerId == MultiplayerSession.HostUserID)
+				{
+					player.readyState = ClientReadyState.Ready;
+					continue;
+				}
+
+				if (player.Connection == null || !player.ProtocolVerified)
+					continue;
+
+				player.readyState = ClientReadyState.Loading;
+				Participants.Add(player.PlayerId);
+			}
+
+			RefreshScreen();
+			SendStatusUpdatePacketToClients();
+			return true;
+		}
+
+		internal static void StartGameplayDrain(float durationSeconds)
+		{
+			GameplayDrainUntil = UnityEngine.Time.realtimeSinceStartup + durationSeconds;
+		}
 
 		public static void SetupListeners()
 		{
@@ -25,10 +147,26 @@ namespace ONI_Together.Networking
 
 			if (!MultiplayerSession.IsHost)
 				return;
+			if (!IsSynchronizing || !IsEveryoneReady())
+				return;
 
-			//CoroutineRunner.RunOne(DelayAllReadyBroadcast());
-			PacketSender.SendToAllClients(new AllClientsReadyPacket());
-			AllClientsReadyPacket.ProcessAllReady();
+			ulong synchronizationId = ActiveSynchronizationId;
+			foreach (ulong participant in SynchronizationParticipants)
+				PacketSender.SendToPlayer(participant, new AllClientsReadyPacket { SynchronizationId = synchronizationId }, PacketSendMode.Reliable);
+			ActiveSynchronizationId = 0;
+			Participants.Clear();
+			SaveFileRequestPacket.ClearPendingSynchronizationTransfers();
+			GameplayDrainUntil = 0f;
+			GameServerHardSync.OnSynchronizationCompleted();
+			MultiplayerOverlay.Show(STRINGS.UI.MP_OVERLAY.SYNC.FINALIZING_SYNC);
+			CoroutineRunner.RunOne(CloseHostOverlayAfterGrace(synchronizationId));
+		}
+
+		private static IEnumerator CloseHostOverlayAfterGrace(ulong synchronizationId)
+		{
+			yield return new UnityEngine.WaitForSecondsRealtime(HostOverlayCloseGraceSeconds);
+			if (!IsSynchronizing && LastIssuedSynchronizationId == synchronizationId)
+				MultiplayerOverlay.Close();
 		}
 
 		public static void SendStatusUpdatePacketToClients()
@@ -41,6 +179,7 @@ namespace ONI_Together.Networking
 			string text = GetScreenText();
 			var packet = new ClientReadyStatusUpdatePacket
 			{
+				SynchronizationId = ActiveSynchronizationId,
 				Message = text
 			};
 			PacketSender.SendToAllClients(packet);
@@ -57,30 +196,11 @@ namespace ONI_Together.Networking
 			var packet = new ClientReadyStatusPacket
 			{
 				SenderId = NetworkConfig.GetLocalID(),
+				SynchronizationId = state == ClientReadyState.Ready ? GameClient.ActiveSynchronizationId : 0,
 				Status = state,
 				PlayerName = Utils.GetLocalPlayerName()
 			};
 			PacketSender.SendToHost(packet);
-		}
-
-		public static void MarkAllAsUnready()
-		{
-			using var _ = Profiler.Scope();
-
-			if (!MultiplayerSession.IsHost)
-				return;
-
-			if (MultiplayerSession.ConnectedPlayers.TryGetValue(MultiplayerSession.HostUserID, out var host))
-				host.readyState = ClientReadyState.Ready; // Host is always ready
-
-			foreach (MultiplayerPlayer player in MultiplayerSession.ConnectedPlayers.Values)
-			{
-				if (player.PlayerId == MultiplayerSession.HostUserID)
-					continue;
-
-				player.readyState = ClientReadyState.Unready;
-			}
-			RefreshScreen();
 		}
 
 		public static void SetPlayerReadyState(MultiplayerPlayer player, ClientReadyState state)
@@ -88,6 +208,9 @@ namespace ONI_Together.Networking
 			using var _ = Profiler.Scope();
 
 			if (player.PlayerId == MultiplayerSession.HostUserID)
+				return;
+			if (state == ClientReadyState.Ready
+				&& (!Participants.Contains(player.PlayerId) || player.readyState != ClientReadyState.Loading))
 				return;
 
 			player.readyState = state;
@@ -109,10 +232,12 @@ namespace ONI_Together.Networking
 			using var _ = Profiler.Scope();
 
 			int readyCount = GetReadyCount();
-			int maxPlayers = MultiplayerSession.ConnectedPlayers.Values.Count;
+			int maxPlayers = IsSynchronizing ? Participants.Count + 1 : MultiplayerSession.ConnectedPlayers.Count;
 			string message = string.Format(STRINGS.UI.MP_OVERLAY.SYNC.WAITING_FOR_PLAYERS_SYNC, readyCount, maxPlayers);
 			foreach (MultiplayerPlayer player in MultiplayerSession.ConnectedPlayers.Values)
 			{
+				if (IsSynchronizing && player.PlayerId != MultiplayerSession.HostUserID && !Participants.Contains(player.PlayerId))
+					continue;
 				message += $"{player.PlayerName}: {GetReadyText(player.readyState)}\n";
 			}
 			return message;
@@ -125,6 +250,8 @@ namespace ONI_Together.Networking
 			int count = 0;
 			foreach (MultiplayerPlayer player in MultiplayerSession.ConnectedPlayers.Values)
 			{
+				if (IsSynchronizing && player.PlayerId != MultiplayerSession.HostUserID && !Participants.Contains(player.PlayerId))
+					continue;
 				if (player.readyState.Equals(ClientReadyState.Ready))
 				{
 					count++;
@@ -143,6 +270,8 @@ namespace ONI_Together.Networking
 					return STRINGS.UI.MP_OVERLAY.SYNC.READYSTATE.READY;
 				case ClientReadyState.Unready:
 					return STRINGS.UI.MP_OVERLAY.SYNC.READYSTATE.UNREADY;
+				case ClientReadyState.Loading:
+					return global::STRINGS.UI.FRONTEND.LOADING;
 			}
 			return STRINGS.UI.MP_OVERLAY.SYNC.READYSTATE.UNKNOWN;
 		}
@@ -166,17 +295,13 @@ namespace ONI_Together.Networking
 		{
 			using var _ = Profiler.Scope();
 
-			bool result = true;
-			foreach (MultiplayerPlayer player in MultiplayerSession.ConnectedPlayers.Values)
+			foreach (ulong participant in Participants)
 			{
-				if (player.readyState == ClientReadyState.Unready)
-				{
-					result = false;
-
-					break;
-				}
+				if (!MultiplayerSession.ConnectedPlayers.TryGetValue(participant, out var player)
+					|| player.readyState != ClientReadyState.Ready)
+					return false;
 			}
-			return result;
+			return true;
 		}
 
 		internal static void RefreshReadyState()
@@ -190,21 +315,11 @@ namespace ONI_Together.Networking
 				return;
 
 			DebugConsole.Log("Refreshing ready state...");
-			if (MultiplayerSession.ConnectedPlayers.Count <= 1)
+			bool allReady = IsEveryoneReady();
+			SendStatusUpdatePacketToClients();
+			if (allReady && IsSynchronizing)
 			{
-				AllClientsReadyPacket.ProcessAllReady();//bypass sending packet if its just the host left
-				return;
-			}
-
-			bool allReady = ReadyManager.IsEveryoneReady();
-			if (allReady)
-			{
-				ReadyManager.SendAllReadyPacket();
-			}
-			else
-			{
-				// Broadcast updated overlay message to all clients
-				ReadyManager.SendStatusUpdatePacketToClients();
+				SendAllReadyPacket();
 			}
 		}
 	}

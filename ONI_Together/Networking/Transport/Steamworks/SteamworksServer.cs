@@ -1,15 +1,9 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading.Tasks;
 using ONI_Together.DebugTools;
 using ONI_Together.Networking.Packets.Architecture;
 using Shared.Profiling;
-using ONI_Together.Networking.States;
 using ONI_Together.Networking.OxySync.Components;
-using ONI_Together.UI;
 using Steamworks;
 
 namespace ONI_Together.Networking.Transport.Steam
@@ -277,6 +271,7 @@ namespace ONI_Together.Networking.Transport.Steam
                 //MultiplayerSession.ConnectedPlayers[clientId] = player;
             }
             player.Connection = conn;
+            player.ProtocolVerified = false;
 
             DebugConsole.Log($"[GameServer] Connection to {clientId} fully established!");
             //SaveFileRequestPacket.SendSaveFile(clientId); // Old method
@@ -289,14 +284,10 @@ namespace ONI_Together.Networking.Transport.Steam
 
             SteamNetworkingSockets.CloseConnection(conn, 0, null, false);
 
-            if (MultiplayerSession.ConnectedPlayers.TryGetValue(clientId.m_SteamID, out var playerToRemove))
-            {
-                playerToRemove.Connection = null;
-            }
+            MultiplayerSession.RemoveConnectedPlayer(clientId.m_SteamID, conn);
 
             DebugConsole.Log($"[GameServer] Connection closed for {clientId}");
 
-            ReadyManager.RefreshReadyState();
             // Do I wanna auto shutdown here? I don't think so
             // if (MultiplayerSession.ConnectedPlayers.Count == 0)
             // {
@@ -324,7 +315,7 @@ namespace ONI_Together.Networking.Transport.Steam
                 DebugConsole.Log($"[GameServer] Kicking client {clientId}");
 
                 SteamNetworkingSockets.CloseConnection(conn, 0, "Kicked by host", false);
-                // The connection closed callback will handle cleanup
+                MultiplayerSession.RemoveConnectedPlayer(clientId, conn);
             }
             else
             {

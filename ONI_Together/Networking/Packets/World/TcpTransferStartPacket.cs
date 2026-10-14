@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using ONI_Together.DebugTools;
 using ONI_Together.Menus;
@@ -14,6 +15,7 @@ namespace ONI_Together.Networking.Packets.World
 		public string FileName;
 		public int FileSize;
 		public ulong ClientId;
+		public ulong SynchronizationId;
 
 		public void Serialize(BinaryWriter writer)
 		{
@@ -23,6 +25,7 @@ namespace ONI_Together.Networking.Packets.World
 			writer.Write(FileName);
 			writer.Write(FileSize);
 			writer.Write(ClientId);
+			writer.Write(SynchronizationId);
 		}
 
 		public void Deserialize(BinaryReader reader)
@@ -33,13 +36,15 @@ namespace ONI_Together.Networking.Packets.World
 			FileName = reader.ReadString();
 			FileSize = reader.ReadInt32();
 			ClientId = reader.ReadUInt64();
+			SynchronizationId = reader.ReadUInt64();
 		}
 
 		public void OnDispatched()
 		{
 			using var _ = Profiler.Scope();
 
-			if (MultiplayerSession.IsHost)
+			if (MultiplayerSession.IsHost || ClientId != MultiplayerSession.LocalUserID
+				|| !GameClient.CanReceiveSynchronizationSave(SynchronizationId))
 				return;
 
 			string hostIp = Configuration.Instance.Client.LanSettings.Ip;
@@ -48,20 +53,21 @@ namespace ONI_Together.Networking.Packets.World
 
 			MultiplayerOverlay.Show("Connecting for save download...");
 
-			TcpFileTransferClient.Download(hostIp, TcpPort, ClientId,
+			ulong synchronizationId = SynchronizationId;
+			Func<bool> isCurrent = () => GameClient.IsCurrentSynchronization(synchronizationId);
+			TcpFileTransferClient.Download(hostIp, TcpPort, ClientId, synchronizationId, isCurrent,
 				(fileName, data) =>
 				{
 					DebugConsole.Log($"[TcpTransferStart] TCP download complete: '{fileName}' ({data.Length} bytes)");
 					var worldSave = new WorldSave(fileName, data);
-					SaveHelper.RequestWorldLoad(worldSave);
+					GameClient.SubmitSynchronizationSave(synchronizationId, worldSave, false);
 				},
 				(error) =>
 				{
 					DebugConsole.LogWarning($"[TcpTransferStart] TCP download failed: {error}. Requesting UDP fallback.");
 					MultiplayerOverlay.Show("TCP connection failed. Downloading save via UDP...");
 
-					var fallback = new TcpFallbackRequestPacket { Requester = ClientId };
-					PacketSender.SendToHost(fallback);
+					GameClient.RequestSynchronizationTransferRetry(synchronizationId, true);
 				});
 		}
 	}

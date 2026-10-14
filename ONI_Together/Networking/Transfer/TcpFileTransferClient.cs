@@ -12,11 +12,11 @@ namespace ONI_Together.Networking.Transfer
 {
 	public static class TcpFileTransferClient
 	{
-		public static void Download(string hostIp, int tcpPort, ulong clientId, Action<string, byte[]> onComplete, Action<string> onError)
+		public static void Download(string hostIp, int tcpPort, ulong clientId, ulong synchronizationId, Func<bool> isCurrent, Action<string, byte[]> onComplete, Action<string> onError)
 		{
 			using var _ = Profiler.Scope();
 
-			Thread thread = new Thread(() => DownloadThread(hostIp, tcpPort, clientId, onComplete, onError))
+			Thread thread = new Thread(() => DownloadThread(hostIp, tcpPort, clientId, synchronizationId, isCurrent, onComplete, onError))
 			{
 				IsBackground = true,
 				Name = "TcpFileTransfer_Download"
@@ -24,7 +24,7 @@ namespace ONI_Together.Networking.Transfer
 			thread.Start();
 		}
 
-		private static void DownloadThread(string hostIp, int tcpPort, ulong clientId, Action<string, byte[]> onComplete, Action<string> onError)
+		private static void DownloadThread(string hostIp, int tcpPort, ulong clientId, ulong synchronizationId, Func<bool> isCurrent, Action<string, byte[]> onComplete, Action<string> onError)
 		{
 			using var _ = Profiler.Scope();
 
@@ -45,6 +45,8 @@ namespace ONI_Together.Networking.Transfer
 
 					byte[] idBytes = BitConverter.GetBytes(clientId);
 					stream.Write(idBytes, 0, 8);
+					byte[] synchronizationBytes = BitConverter.GetBytes(synchronizationId);
+					stream.Write(synchronizationBytes, 0, 8);
 					stream.Flush();
 
 					byte[] fileNameLenBuf = ReadExact(stream, 4);
@@ -85,6 +87,8 @@ namespace ONI_Together.Networking.Transfer
                             int percent = (int)((double)received * 100 / fileSize);
                             MainThreadExecutor.dispatcher.QueueEvent(() =>
                             {
+                                if (!isCurrent())
+                                    return;
                                 var bar = CreateClientProgressBar(percent);
                                 string message = string.Format(
                                     STRINGS.UI.MP_OVERLAY.CLIENT.TCP_DOWNLOADING_SAVE_FILE,
@@ -103,7 +107,8 @@ namespace ONI_Together.Networking.Transfer
 
 					MainThreadExecutor.dispatcher.QueueEvent(() =>
 					{
-						onComplete(fileName, data);
+						if (isCurrent())
+							onComplete(fileName, data);
 					});
 				}
 			}
@@ -112,7 +117,8 @@ namespace ONI_Together.Networking.Transfer
 				DebugConsole.LogError($"[TcpFileTransfer] Download failed: {ex.Message}", false);
 				MainThreadExecutor.dispatcher.QueueEvent(() =>
 				{
-					onError(ex.Message);
+					if (isCurrent())
+						onError(ex.Message);
 				});
 			}
 		}

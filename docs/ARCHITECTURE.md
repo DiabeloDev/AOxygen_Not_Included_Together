@@ -1,6 +1,6 @@
 # Oxygen Not Included Together — Architecture
 
-**Last updated:** 2026-10-03  
+**Last updated:** 2026-10-15  
 **Document status:** Recovered and consolidated reference. This document preserves the existing architecture recorded in the `game mod` ChatGPT Project and the local repository; it is not a redesign.
 
 ## 1. Purpose and source of truth
@@ -34,9 +34,9 @@ Current evidence supports **implemented and tested** status for ordinary synchro
 
 Unless a section explicitly cites current source or recorded tests, session epochs, per-command IDs and deduplication, replication journals, consistent `T/J` save cursors, ready/catch-up barriers, universal domain versions/hashes, tombstones, and targeted reconciliation describe the **proposed target architecture**, not verified current behavior.
 
-### Release-candidate implementation baseline (2026-10-03)
+### October 3 audited release-candidate baseline
 
-The merged `experiment` branch is the current integration baseline at commit `0bec442e13893b4da113b363a379f9fe2b74be3a`. That commit reports mod version `0.8.0.3`. A local staged release-candidate state bumps the version to `0.8.0.4` and includes additional logging/documentation edits, so the staged `0.8.0.4` runtime logs are **not** evidence for the clean `0bec442...` HEAD.
+The October 3 repository audit recorded the then-current merged `experiment` baseline at commit `0bec442e13893b4da113b363a379f9fe2b74be3a`. That commit reported mod version `0.8.0.3`. A local staged release-candidate state bumped the version to `0.8.0.4` and included additional logging/documentation edits, so the staged `0.8.0.4` runtime logs were **not** evidence for the clean `0bec442...` HEAD. This is historical audit provenance and must not be treated as the current integration baseline after the later 0.8.0.4 release and subsequent `develop` work.
 
 Historical multiplayer evidence for Navigator arrival ordering, ordinary `StandardWorker` synchronization, and `AnimSyncer` reliable symbol delivery remains valid for the tested builds in which it was obtained. Those results must not be promoted to exact-release-commit verification until a clean release commit is built and tested.
 
@@ -162,6 +162,33 @@ Snapshots contain persistent world state and the current long-lived activity. Th
 The host retains a bounded catch-up journal while the client loads. If the journal overflows, restart from a newer baseline instead of skipping updates. Hard sync uses an explicit phase barrier: request, host safe point/pause, save/cursor, transfer/verify, client unload/load and identity rebuild, catch-up, readiness, resume. The host creates the canonical save; clients never publish their independent saves as canonical.
 
 Reconnect uses missing updates only when the old baseline/cursor remains valid; otherwise it installs a fresh epoch/baseline. Save chunks are written to a temporary file and atomically promoted only after size, checksum, game/mod compatibility, and format checks succeed.
+
+### Current transport-preserving world-load boundary
+
+Normal host-save/world loading preserves the physical transport connection and the logical multiplayer session while the client replaces its world. Transport connectivity, logical player/session identity, world-loading state, and gameplay admission are distinct concerns. The current client lifecycle is organized around `Disconnected -> Connecting -> Connected -> LoadingWorld -> InGame`; normal synchronization/world replacement does not require the client to tear down and recreate the transport connection.
+
+Current `develop` contains the later rebuilt client-lifecycle work that removed the earlier loading-client cache, pending-join, cached reconnect-era state, and `readyToProcess` mechanisms. The current implementation also keeps synchronization identity separate from connection-attempt identity: the synchronization ID identifies which synchronization is active, while transport-specific connection-attempt guards protect against stale callbacks. Exact conformance of every October 7 generation/admission/reset proposal to the final `develop` source has not been independently re-audited and must not be inferred from Git history alone.
+
+During `LoadingWorld`, gameplay/network-behaviour admission remains restricted so old-world gameplay traffic cannot be applied as ordinary live traffic. The enduring rule is to preserve transport/session continuity while invalidating or rebuilding world-scoped networking state before gameplay resumes. Detailed mechanisms such as a formal `loadGeneration`, a named `BeginWorldLoadReset(loadGeneration)` API, recursive classification coverage for every wrapper, and a distinct `WorldLoadCompleted(loadGeneration)` acknowledgement remain requirements to verify against current source rather than assumptions about implementation.
+
+Final gameplay admission remains tied to the synchronized lifecycle, not merely to transport connection or `Game.OnSpawnComplete`. The current client sends Ready from the world-spawn completion path and enters `InGame` only after the matching host all-ready completion for the active synchronization. `ReadyManager` consumes readiness as a host synchronization/session barrier; it is not a second owner of the client state machine.
+
+Synchronization pause ownership is now source-defined separately from readiness and overlay presentation. The host pauses once in `GameServerHardSync.PerformHardSync` after `BeginSynchronization` is accepted, and the client pauses once in `GameClient.BeginSynchronization`. `ReadyManager` remains speed-agnostic and generic `MultiplayerOverlay.Show()` calls do not own simulation speed. Synchronization completion does not automatically unpause.
+
+The host pause-acquisition point is therefore no longer unknown. What remains to verify is whether that acquired paused state, together with the current synchronization flow, fully prevents authoritative advancement for the entire baseline/load interval in every relevant path. If host simulation can still advance after snapshot capture and before final admission, a complete catch-up mechanism or a stronger barrier is still required. The existence of a pause call must not be promoted to proof of full interval coverage without source/runtime evidence.
+
+### Historical PR #83 readiness / intentional reconnect implementation
+
+Before the later lifecycle rebuild, PR #83 implemented and verified a different normal-load strategy: the host retained a pending join across an intentional `LoadingWorld` disconnect/reconnect for stable-identity transports, `ClientReadyState.Loading` was persisted as readiness state, and final `Ready` closed the host-owned readiness barrier. The authoritative all-ready condition in that implementation was:
+
+```text
+no pending joins
+AND every relevant connected participant is exactly Ready
+```
+
+That implementation produced valid historical evidence: one LiteNetLib joining-client flow preserved the same persistent logical player ID across disconnect/reconnect and reached final Ready; Steamworks was source-reviewed only; Riptide was excluded from that correlation because its player ID was connection-scoped. The host/join overlay was derived from readiness/status packets rather than an independent arbitrary UI-open/close authority.
+
+Those PR #83 mechanisms are **not the current normal-load architecture**. Later `develop` work explicitly removed the loading-client cache, pending joins, cached reconnect-era connection state, and `readyToProcess`, and rebuilt normal synchronization around transport-preserving loading. Preserve the PR #83 runtime results as historical regression evidence and fallback history only; do not use them to describe the current `develop` implementation.
 
 ## 7. World and domain replication
 
@@ -298,9 +325,14 @@ Some Reactables mutate simulation state in `Begin`, `Run`, or `End`. A future ge
 - The host validates `Normal`, `Double`, or `Triple`, applies it through `SpeedControlScreen`, increments a revision, and broadcasts the accepted state.
 - Clients ignore revisions already applied.
 - A depth counter (`IsApplyingNetworkState`) prevents re-entrant vanilla calls from feeding back into the network path.
-- A joining client requests a resync.
 
 This is the preferred pattern for small, latency-sensitive authority changes: command to host, host validation/application, revisioned reliable RPC to clients.
+
+Lifecycle-specific speed coupling is deliberately excluded. `ReadyManager` remains a speed-agnostic readiness/session barrier; it does not expose or own `IsSimulationLocked`. `GameSpeedSyncer.RequestReSync` and load-time lifecycle guards were rejected and removed because they made generic readiness or load presentation responsible for simulation-speed policy.
+
+Synchronization pausing belongs at the one-shot synchronization entry points that know why synchronization is occurring: the host pauses in `GameServerHardSync.PerformHardSync` after `BeginSynchronization` has been accepted, and the client pauses in `GameClient.BeginSynchronization`. `MultiplayerOverlay` is too generic to own this behavior because the same overlay can represent several lifecycle conditions. Synchronization does not automatically unpause afterward; the user or later authoritative speed action controls resumption.
+
+This is an accepted ownership boundary. The session record reports that the lifecycle/speed simplification was implemented and built successfully with 0 errors and 203 warnings, but no runtime verification or exact release-artifact verification was established.
 
 The whole-mod target further requires an absolute desired speed (`Paused`, `Normal`, `Double`, `Triple`) rather than a network “toggle,” plus an explicit multiplayer permission policy. Local toggle UI translates to a desired absolute state. Host tick/time is a drift and freshness reference, not a claim of deterministic simulation.
 
@@ -321,7 +353,9 @@ Examples of the preferred input-level direction remain:
 - generator state → the appropriate generator input/state
 - `Operational` → derived by vanilla from valid synchronized/local inputs where practical
 
-**Current `experiment` implementation:** complete Operational/power removal is **not** part of the merged release candidate. The removal commit `484bc805dd13e1755b2648192c55b23bd1e7b11e` exists on `ren/test-0.8.0` but is not an ancestor of `experiment`. The merged branch still contains `OperationalStatePacket`, `RequestOperationalStatePacket`, `Operational_Patch`, `Operational_Patches`, `EnergyConsumer_Patches`, and `ClientReceiver_Operational`. PR #53 revised this path so clients use vanilla/local state until host state becomes available. This implementation requires release-candidate verification and must not be described as removed.
+**October 3 audited implementation state:** complete Operational/power removal was **not** part of the audited `experiment` release-candidate baseline. The removal commit `484bc805dd13e1755b2648192c55b23bd1e7b11e` existed on `ren/test-0.8.0` but was not an ancestor of the audited `experiment` baseline. That audited branch still contained `OperationalStatePacket`, `RequestOperationalStatePacket`, `Operational_Patch`, `Operational_Patches`, `EnergyConsumer_Patches`, and `ClientReceiver_Operational`; PR #53 revised this path so clients used vanilla/local state until host state became available.
+
+For the later 0.8.0.4 release, the user reported that their custom Operational/power work was removed and an upstream fix was merged. The exact final released source tree, upstream commit, and hash were not independently captured in this Project, so this document does not claim the present repository implementation from that report alone. The enduring architectural rule above remains authoritative regardless of which implementation is currently present.
 
 ## 14. Compatibility, performance, trust, and failure boundaries
 
@@ -351,7 +385,10 @@ Minimum whole-mod scenarios cover:
 
 | Module | Responsibility |
 | --- | --- |
-| Transport/session | Connections, delivery modes, lobby, file transfer |
+| `MultiplayerSession` / common networking | Shared multiplayer-session ownership, including common host/session/player state and shared registration/removal/connect/disconnect semantics |
+| Transport implementations | Connections, delivery modes, lobby/file-transfer mechanics, transport handles/maps, and transport-specific identity mechanics; no duplicate ownership of common session state |
+| `GameClient` client lifecycle | Client-side load-generation transition, world reset/rebuild validation, `WorldLoadCompleted`, and final `Ready` production; reconnect only for actual transport loss/fallback |
+| `ReadyManager` / `GameServerHardSync` | Current readiness and synchronization lifecycle. `ReadyManager` remains speed-agnostic; synchronization pause is initiated only at the host/client one-shot synchronization entry points |
 | OxySync core | `NetworkBehaviour`, commands, RPCs, SyncVars, dirty tracking, interest groups |
 | Identity/registry | Stable `NetId` mapping and lifecycle |
 | State syncers | Host-owned persistent entity/building/world state |
@@ -359,7 +396,7 @@ Minimum whole-mod scenarios cover:
 | `AnimSyncer` | Animation replay, ownership scopes, overrides, symbols |
 | `StandardWorkerSyncer` | Host-authorized ordinary worker lifecycle |
 | `ReactableSyncer` | Local Reactable registry and host authorization rendezvous |
-| `GameSpeedSyncer` | Revisioned pause/speed command and replay |
+| `GameSpeedSyncer` | Revisioned ordinary pause/speed command and replay, without load-time lifecycle resync ownership |
 | Harmony patches | Observe stable vanilla boundaries and delegate; avoid owning protocol logic |
 
 The target code layout separates protocol, session, commands, identity, state, events, save synchronization, diagnostics, and thin ONI patches. Wire schemas should not mirror private ONI constructors or reflection signatures; version-sensitive calls stay behind adapters.
@@ -419,11 +456,17 @@ The maintained Project references remain `ARCHITECTURE.md`, `DECISIONS.md`, `STA
 | September 27 worker verification report in `game mod` Project conversation | ChatGPT Project conversation | Not applicable | 2026-09-27 | Previous multiplayer log/test analysis |
 | Milestone 2 Navigator arrival-publication investigation and runtime verification | `game mod` Project conversation plus Local game mod report | Not applicable | 2026-09-28 | Root-cause, implementation, build, and runtime evidence; exact Stop counts and sequence continuity were not traced |
 | Reactable lifecycle discussions (`Reactable Step One`, `Patch Reactable Synchronization`) | ChatGPT Project conversations | Not applicable | 2026-09-27 | Previous observations plus architectural discussion |
+| Join-overlay/readiness implementation and LiteNetLib verification | `game mod` Project session; GitHub issues #78–#81 and PR #83 | PR head `cd14ac71bccb1a960f59ba92df0a4abf8cdb1c27`; merged to `develop` as `c1c93cb5ab2ae839d28d36d32eff9a565b4f111f` | 2026-10-07 | Source review plus single-joining-client LiteNetLib runtime evidence; Steam source-only; Riptide excluded |
 
 `animation_sync_spec.md` is obsolete and is not evidence for this architecture.
 
 ## Revision history
 
+- **2026-10-15 (reconciliation):** Reclassified the PR #83 pending-join / intentional disconnect-reconnect flow as historical verified implementation evidence rather than current lifecycle architecture. Updated the current boundary to the later transport-preserving `develop` lifecycle, preserved exact-conformance uncertainty for the October 7 generation/reset proposal, and reconciled the formerly unknown pause mechanism with the accepted one-shot host/client pause entry points while keeping full-interval advancement coverage unverified.
+- **2026-10-15:** Removed lifecycle-specific speed coupling from the accepted architecture. Kept `ReadyManager` speed-agnostic, rejected `IsSimulationLocked` and load-time `GameSpeedSyncer.RequestReSync`/guards, assigned pause initiation to the accepted host/client synchronization entry points, and specified no automatic unpause. Clarified the intended session-centralization boundary while keeping PR #86 implementation and regression status separate from accepted architecture.
+- **2026-10-07:** Approved the transport-preserving normal world-load architecture. Separated transport/session lifetime from per-generation gameplay admission; added centralized world reset, recursive control-packet classification, discard-not-buffer loading behavior, verified reconstruction after `Game.OnSpawnComplete`, `WorldLoadCompleted(loadGeneration)` acknowledgement, and final-`Ready` admission. Recorded host-simulation advancement/catch-up as a blocking implementation prerequisite and retained reconnect for actual transport loss until LiteNetLib and Steam validation.
+- **2026-10-07:** Corrected stale October 3 wording: `0bec442...` is historical audited release-candidate provenance rather than the current integration baseline; reframed the PR #53 Operational/power implementation as the October 3 audited state and preserved the later user-reported 0.8.0.4 removal/upstream-fix evidence without inventing the current source tree.
+- **2026-10-07:** Added the implemented readiness/pending-join and join-overlay boundary: exact final `Ready` is authoritative; `Loading` persists across intentional disconnect; existing stable `PlayerId` is reused instead of adding a join token; LiteNetLib is runtime-verified, Steam is source-supported only, and Riptide is excluded. Recorded the distinct pre-loading cancellation path and the unresolved permanently-abandoned-`Loading` timeout policy. GitHub verified PR #83 merged into `develop`.
 - **2026-10-03:** Added documentation source-selection policy excluding personal `docs/Tracking.md` / `docs/AI logs.md` and historical `TRELLO_PROGRESS_STATUS.md` from automatic audits unless explicitly requested.
 - **2026-10-03:** Recorded merged `experiment` integration baseline `0bec442e13893b4da113b363a379f9fe2b74be3a`, separated staged `0.8.0.4` runtime evidence from clean HEAD, added current release blockers, corrected the false assumption that Operational/power synchronization was removed from `experiment`, and documented manual Local game mod switching because automatic Work handoff is not reliable. No enduring authority model was redesigned.
 - **2026-09-28:** Recorded the completed Milestone 2 Navigator arrival-publication boundary: publish successful arrival before synchronous `StartWork`, suppress the nested same-arrival cleanup publication, retain unrelated Stops, and remove the worker-playback idle guard. Added runtime evidence and its trace limitations; made genuine navigation interruption the next milestone.

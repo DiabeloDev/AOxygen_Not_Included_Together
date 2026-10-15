@@ -71,7 +71,10 @@
 			$(TargetDir)$(TargetName).dll;
 			$(TargetDir)$(TargetName).pdb;
 			$(TargetDir)mod.yaml;
-			$(TargetDir)mod_info.yaml;		
+			$(TargetDir)mod_info.yaml;
+			$(SolutionDir)LICENSE.md;
+			$(SolutionDir)THIRD_PARTY_NOTICES.md;
+			$(SolutionDir)ASSET_PROVENANCE.md;
 		  "
 		  
 		  DestinationFolder="$(TargetFolder)"/>

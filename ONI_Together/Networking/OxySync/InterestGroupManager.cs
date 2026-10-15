@@ -43,6 +43,11 @@ namespace ONI_Together.Networking.OxySync
             _playerGroups.Remove(playerId);
         }
 
+        internal static void Clear()
+        {
+            _playerGroups.Clear();
+        }
+
         public static bool IsPlayerInGroup(ulong playerId, int groupId)
         {
             if (groupId == -1) return true;

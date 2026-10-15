@@ -276,6 +276,7 @@ namespace ONI_Together.Networking.Transport.Lan
             MultiplayerSession.OnConnectedToHost(MultiplayerSession.HostUserID, _serverPeer);
 
             OnClientConnected?.Invoke();
+            MultiplayerSession.PublishClientConnected();
             DebugConsole.Log("[LiteNetLibClient] Connected to host! Assigned Client ID: " + MultiplayerSession.LocalUserID);
             OnRequestStateOrReturn?.Invoke();
         }

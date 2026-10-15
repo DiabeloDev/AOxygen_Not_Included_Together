@@ -211,6 +211,7 @@ namespace ONI_Together.Networking.Transport.Steam
 
             MultiplayerSession.OnConnectedToHost(MultiplayerSession.HostUserID, Connection);
             NetworkConfig.TransportClient.OnClientConnected.Invoke();
+            MultiplayerSession.PublishClientConnected();
 
             DebugConsole.Log("[GameClient] Connection to host established!");
 

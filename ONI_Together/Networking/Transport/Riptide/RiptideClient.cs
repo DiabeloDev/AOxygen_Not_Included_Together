@@ -122,8 +122,9 @@ namespace ONI_Together.Networking.Transport.Lan
 
             ResetBandwidth();
 
-            OnClientConnected.Invoke();
             MultiplayerSession.OnConnectedToHost(1, conn); // Host's client is always 1
+            OnClientConnected.Invoke();
+            MultiplayerSession.PublishClientConnected();
 
             DebugConsole.Log($"[Riptide] Connected to server with Client ID: {CLIENT_ID}");
 

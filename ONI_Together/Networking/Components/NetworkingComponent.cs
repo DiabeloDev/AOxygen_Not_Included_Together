@@ -1,9 +1,6 @@
-using ONI_Together.DebugTools;
 using ONI_Together.Misc;
 using ONI_Together.Networking.States;
-using ONI_Together.Networking.Transport.Steamworks;
 using Shared.Profiling;
-using Steamworks;
 using UnityEngine;
 
 namespace ONI_Together.Networking.Components
@@ -23,9 +20,6 @@ namespace ONI_Together.Networking.Components
 			//SteamNetworkingUtils.InitRelayNetworkAccess();
 			//GameClient.Init();
 
-			// NOTE: Client reconnection after world load is now handled in
-			// GamePatch.OnSpawnPostfix which triggers AFTER the world is fully loaded.
-			// This is safer than OnPostSceneLoaded which fires during scene unload.
 		}
 
 		private void Update()
@@ -40,10 +34,9 @@ namespace ONI_Together.Networking.Components
 					return;
 			}
 
-			//if (!MultiplayerSession.InSession)
-			//	return;
-
-            if (MultiplayerSession.IsHost)
+            if (GameServer.State == ServerState.Started &&
+                (MultiplayerSession.IsHost ||
+                 NetworkConfig.transport == NetworkConfig.NetworkTransport.RIPTIDE))
 			{
 				GameServer.Update();
 			}

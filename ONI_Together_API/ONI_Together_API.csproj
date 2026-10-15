@@ -31,5 +31,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="..\README_NUGET.md" Pack="true" PackagePath="\" />
+    <None Include="..\LICENSE.md" Pack="true" PackagePath="\" />
+    <None Include="..\THIRD_PARTY_NOTICES.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 </Project>

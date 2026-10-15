@@ -1,14 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading.Tasks;
 using ONI_Together.DebugTools;
-using ONI_Together.Menus;
 using ONI_Together.Misc;
 using ONI_Together.Networking.Packets.Architecture;
-using ONI_Together.Networking.Packets.Handshake;
 using Shared.Profiling;
 using ONI_Together.Networking.States;
 using Shared;
@@ -22,6 +17,7 @@ namespace ONI_Together.Networking.Transport.Steam
     {
         private static Callback<SteamNetConnectionStatusChangedCallback_t> _connectionStatusChangedCallback;
         public static HSteamNetConnection? Connection { get; private set; }
+        private static readonly HashSet<uint> _intentionalDisconnects = new();
 
         private static SteamNetConnectionRealTimeStatus_t? connectionHealth = null;
 
@@ -72,18 +68,22 @@ namespace ONI_Together.Networking.Transport.Steam
             {
                 DebugConsole.Log("[GameClient] Disconnecting from host...");
 
+                HSteamNetConnection connection = Connection.Value;
+                uint connectionHandle = connection.m_HSteamNetConnection;
+                _intentionalDisconnects.Add(connectionHandle);
                 bool result = SteamNetworkingSockets.CloseConnection(
-                        Connection.Value,
+                        connection,
                         0,
                         "Client disconnecting",
                         false
                 );
+                if (!result)
+                    _intentionalDisconnects.Remove(connectionHandle);
 
                 DebugConsole.Log($"[GameClient] CloseConnection result: {result}");
                 Connection = null;
 
-                MultiplayerSession.InActiveSession = false;
-                //SaveHelper.CaptureWorldSnapshot();
+                MultiplayerSession.OnDisconnectedFromHost(null);
             }
             else
             {
@@ -95,6 +95,8 @@ namespace ONI_Together.Networking.Transport.Steam
         {
             using var _ = Profiler.Scope();
 
+            ulong currentHostId = MultiplayerSession.HostUserID;
+
             // If already connected/connecting, disconnect first to avoid duplicate P2P handles
             if (Connection.HasValue || GameClient.State == ClientState.Connected || GameClient.State == ClientState.Connecting)
             {
@@ -102,6 +104,8 @@ namespace ONI_Together.Networking.Transport.Steam
                 Disconnect();
                 // Note: previous Thread.Sleep(100) removed - blocks main thread; SteamNetworkingSockets needs 1 frame via RunCallbacks instead
             }
+
+            MultiplayerSession.SetHost(currentHostId);
 
             if (MultiplayerSession.HostUserID != Utils.NilUlong())
             {
@@ -158,7 +162,6 @@ namespace ONI_Together.Networking.Transport.Steam
 
                 try
                 {
-                    //DebugConsole.Log($"[GameClient] Processing packet {i+1}/{msgCount}, size: {msg.m_cbSize} bytes, readyToProcess: {PacketHandler.readyToProcess}");
                     PacketHandler.HandleIncoming(data);
                 }
                 catch (Exception ex)
@@ -180,7 +183,12 @@ namespace ONI_Together.Networking.Transport.Steam
 
             DebugConsole.Log($"[GameClient] Connection status changed: {state} (remote={remote})");
 
-            if (Connection.HasValue && data.m_hConn.m_HSteamNetConnection != Connection.Value.m_HSteamNetConnection)
+            if ((state == ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ClosedByPeer
+                    || state == ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ProblemDetectedLocally)
+                && _intentionalDisconnects.Remove(data.m_hConn.m_HSteamNetConnection))
+                return;
+
+            if (!Connection.HasValue || data.m_hConn.m_HSteamNetConnection != Connection.Value.m_HSteamNetConnection)
                 return;
 
             switch (state)
@@ -201,22 +209,9 @@ namespace ONI_Together.Networking.Transport.Steam
         {
             using var _ = Profiler.Scope();
 
-            //MultiplayerOverlay.Close();
-
-            // We've reconnected in game
-            MultiplayerSession.InActiveSession = true;
-            Game.Instance?.Trigger(MP_HASHES.OnConnected);
+            MultiplayerSession.OnConnectedToHost(MultiplayerSession.HostUserID, Connection);
             NetworkConfig.TransportClient.OnClientConnected.Invoke();
-
-            var hostId = MultiplayerSession.HostUserID;
-            if (!MultiplayerSession.ConnectedPlayers.ContainsKey(hostId))
-            {
-                var hostPlayer = new MultiplayerPlayer(hostId);
-                MultiplayerSession.ConnectedPlayers[hostId] = hostPlayer;
-            }
-
-            // Store the connection handle for host
-            MultiplayerSession.ConnectedPlayers[hostId].Connection = Connection;
+            MultiplayerSession.PublishClientConnected();
 
             DebugConsole.Log("[GameClient] Connection to host established!");
 
@@ -226,7 +221,6 @@ namespace ONI_Together.Networking.Transport.Steam
 				return;
 			}
 
-			PacketHandler.readyToProcess = true;
 			NetworkConfig.TransportClient.OnRequestStateOrReturn.Invoke();
 		}
 
@@ -235,14 +229,10 @@ namespace ONI_Together.Networking.Transport.Steam
             using var _ = Profiler.Scope();
 
             DebugConsole.LogWarning($"[GameClient] Connection closed or failed ({state}) for {remote}. Reason: {reason}");
-
-            // If we're intentionally disconnecting for world loading, don't show error or return to title
-            // We will reconnect automatically after the world finishes loading via ReconnectFromCache()
-            if (GameClient.State == ClientState.LoadingWorld)
-            {
-                DebugConsole.Log("[GameClient] Ignoring disconnect callback - world is loading, will reconnect after.");
-                return;
-            }
+			if (GameClient.State == ClientState.Connecting)
+                NetworkConfig.TransportClient.OnConnectionFailed?.Invoke();
+			else
+				NetworkConfig.TransportClient.OnClientDisconnected?.Invoke();
 
             switch (state)
             {
@@ -259,6 +249,8 @@ namespace ONI_Together.Networking.Transport.Steam
                     NetworkConfig.TransportClient.OnReturnToMenu.Invoke(STRINGS.UI.MP_OVERLAY.CLIENT.STEAMWORKS.LOCAL_PROBLEM, STRINGS.UI.MP_OVERLAY.CLIENT.STEAMWORKS.LOCAL_PROBLEM_DESC);
                     break;
             }
+
+            MultiplayerSession.OnDisconnectedFromHost(null);
         }
 
         #region Connection Health

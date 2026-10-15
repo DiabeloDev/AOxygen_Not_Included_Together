@@ -87,10 +87,19 @@ namespace ONI_Together.Misc.World
 
 		private static readonly Dictionary<string, InProgressSave> InProgress = new Dictionary<string, InProgressSave>();
 
+		internal static void Clear()
+		{
+			InProgress.Clear();
+			isDownloading = false;
+		}
+
 		public static void ReceiveChunk(SaveFileChunkPacket chunk)
 		{
 			using var _ = Profiler.Scope();
 
+			if (!SaveFileRequestPacket.TryGetSynchronizationId(chunk.TransferId, out ulong synchronizationId)
+				|| !GameClient.CanReceiveSynchronizationSave(synchronizationId))
+				return;
 			if (!InProgress.TryGetValue(chunk.FileName, out var save))
 			{
 				// Determine chunk size from first received chunk
@@ -170,7 +179,7 @@ namespace ONI_Together.Misc.World
 				isDownloading = false;
 
 				var fullSave = new WorldSave(chunk.FileName, save.Data);
-				CoroutineRunner.RunOne(DelayedLoad(fullSave));
+				GameClient.SubmitSynchronizationSave(synchronizationId, fullSave, true);
 			}
 			// REMOVED: Don't check for missing chunks immediately after each packet
 			// Let the background periodic checker handle missing chunks based on inactivity timeout
@@ -237,12 +246,7 @@ namespace ONI_Together.Misc.World
 				InProgress.Remove(fileName);
 			}
 
-			var requestPacket = new SaveFileRequestPacket
-			{
-				Requester = MultiplayerSession.LocalUserID
-			};
-
-			PacketSender.SendToHost(requestPacket);
+			GameClient.RequestSynchronizationTransferRetry(GameClient.ActiveSynchronizationId);
 		}
 
 		/// <summary>
@@ -322,12 +326,5 @@ namespace ONI_Together.Misc.World
 			}
 		}
 
-		private static System.Collections.IEnumerator DelayedLoad(WorldSave save)
-		{
-			using var _ = Profiler.Scope();
-
-            yield return new WaitForSecondsRealtime(1f);
-			SaveHelper.RequestWorldLoad(save);
-		}
 	}
 }

@@ -1,27 +1,79 @@
 # Oxygen Not Included Together — Development Status
 
-**Last updated:** 2026-10-03  
-**Scope:** Latest status recoverable from the `game mod` ChatGPT Project, the local reference documents, and Local game mod implementation/build/log reports. This revision establishes the October 3 merged `experiment` integration baseline and keeps historical runtime evidence separate from exact-release-commit verification.
+**Last updated:** 2026-10-15  
+**Scope:** Latest status recoverable from the `game mod` ChatGPT Project, the local reference documents, Local game mod implementation/build/log reports, and point-in-time GitHub/Git evidence through 2026-10-15. Historical runtime/build evidence remains tied to the exact scope in which it was obtained.
 
 ## Executive summary
 
-- **Merged integration baseline:** `experiment` HEAD `0bec442e13893b4da113b363a379f9fe2b74be3a`, tracking `origin/experiment` with ahead/behind 0/0 at audit time.
-- **Release tree was not clean:** nine staged paths existed. Clean HEAD reports version `0.8.0.3`; staged state bumps to `0.8.0.4`.
-- The October 3 host/client logs report `0.8.0.4`, so they describe the staged state rather than exact clean HEAD.
-- **Release is blocked** pending resolution/decision on Pickupable generic `WorkableSyncer` completion failure, Reactable `NetId == 0` authorization failures, Sweepy navigation eligibility/missing `NavigatorSyncer`, storage-rebuild exceptions, and exact-hash release regression testing.
-- Historical verified results remain evidence for their tested builds: ordinary StandardWorker multitool targeting (65/65), Navigator arrival ordering (33/33 StartWork correspondence), and prior AnimSyncer reliable symbol delivery for already-registered entities (136/136 synchronized applications with no reorder/duplicate/value mismatch). They do not by themselves verify the final release commit.
-- The existing architecture and prior conversations were accessible and recovered.
-- The missing primary source, `ONI_Together_Full_Mod_Architecture.md`, was recovered from the refreshed `origin/experiment` branch and now governs the whole-mod target architecture.
-- Ordinary synchronized `StandardWorker` multitool targeting is strongly verified: **65/65** client jobs reached local `ToolTarget` callbacks and **65/65** target positions matched the host.
-- Pickupable is a verified special-workable synchronization defect: `StandardWorkerSyncer` excludes `Pickupable` / `PickupableStartWorkInfo`, so the client lacks the corresponding `StandardWorker` / `MultitoolController` lifecycle even though `WorkableSyncer` still replays workable-level events.
-- Milestone 2 is complete. The worker-animation overwrite root cause was a late outer `Navigator.Stop` Postfix publication after synchronous nested arrival flow had already reached `StartWork`.
-- Successful arrival publication now occurs before synchronous arrival processing; nested same-arrival cleanup Stop publication is suppressed; the worker-playback Navigator-idle guard was removed.
-- The host-authorized, client-local Reactable design is present in current source and uses one-shot `(reactableId, reactorNetId)` authorization. It remains provisional pending broader timing and reaction coverage.
-- Revisioned immediate game-speed synchronization is present in current source.
-- Operational/power synchronization remains present in `experiment`; PR #53 revised its client fallback behavior. The separate full-removal commit is not merged into `experiment`.
-- **Immediate development priority:** finish the release-candidate gate before returning to Milestone 3 deliberate navigation-interruption testing.
+- **Current checked `develop` baseline:** `d5a1326d7e5cfc816794644a2d1e597949b84f66`. PR #63 (`Develop/0.8.0.5`) is open from `develop` into `experiment` `64a4dd6fa2870877868d13be034a3d8cf13f1f19`; GitHub reported it cleanly mergeable on 2026-10-15. `develop` is 30 commits ahead and zero behind `experiment`.
+- **Final upstream-tracking release:** PR #63 / 0.8.0.5 is the final release intended to track upstream. Its last imported upstream parent is `1c9d7226c7f9dbde7c303a11af4adf5fd5c2ffbb`, imported through `88e7f06c...` on 2026-10-05 while upstream was MIT-licensed. The upstream restrictive-license change from 2026-10-11 is not an ancestor of `develop`. Future releases are intended to form an independent community-maintained project line and must not automatically import post-transition upstream code.
+- **Legal preparation remains open:** current packaging must carry `LICENSE.md` and third-party notices; copied-source provenance remains unresolved; and historical committed ONI/Unity/Steam binaries require a separately approved repository-history remediation plan. Every currently tracked image and asset bundle was verified byte-for-byte against the last imported MIT upstream commit and is recorded as inherited MIT-covered material in `ASSET_PROVENANCE.md`. Current `develop` does not track those proprietary DLLs and does not copy development/publicized ONI assemblies into the mod output.
+- **Lifecycle/speed simplification:** `ReadyManager` is speed-agnostic; `IsSimulationLocked`, `GameSpeedSyncer.RequestReSync`, and load-time lifecycle guards were rejected/removed. Pause ownership is at `GameServerHardSync.PerformHardSync` after accepted `BeginSynchronization` and at `GameClient.BeginSynchronization`, with no automatic unpause. The source build succeeded with 0 errors and 203 warnings; no runtime test or exact release-artifact verification was established.
+- **Session centralization:** the work previously tracked through PR #86 was superseded by the corrected integration and merged through PR #87 at `d5a1326d...`. PR #63 is the release integration into `experiment`. No exact PR #63 release artifact has yet been build- or runtime-verified.
+- **Release preparation:** the Git/license boundary is verified, but legal remediation, exact final baseline selection, packaging inspection, build, and runtime verification remain required before release.
+- **0.8.0.4 has been released.** The user confirmed the release completed successfully. The exact final release commit, tag, and hash were not independently captured in this Project evidence and must not be invented.
+- The October 3 merged `experiment` audit baseline remains useful historical provenance: clean HEAD was `0bec442e13893b4da113b363a379f9fe2b74be3a` (`0.8.0.3`) while the then-staged test state reported `0.8.0.4`. That audit is not being retroactively promoted to the final released hash.
+- Historical verified results remain valid for their tested builds: ordinary StandardWorker multitool targeting (**65/65**), Navigator arrival ordering (**33/33** StartWork correspondence), and prior AnimSyncer reliable symbol delivery for already-registered entities (**136/136** synchronized applications with no reorder/duplicate/value mismatch).
+- The Storage rebuild crash was narrowed to `BuildingUtils.ClearStorage` dereferencing null/already-destroyed storage entries. A defensive null/destroyed-entry guard was applied and the subsequent paired runtime regression did not reproduce the old exception. Exact `StorageSyncer.OnStorageChanged` invocation was not trace-visible, so that limitation is preserved.
+- Sweepy synchronization is **not part of the current supported multiplayer feature set**. The temporary idea of registering Sweepy with the creature synchronization stack was intentionally deferred rather than shipped without dedicated testing.
+- The user's custom Operational/power work was removed and an upstream fix was merged. This Project does not independently record the final upstream commit/hash for that change.
+- ONI compatibility metadata is generated through the normal game/mod build workflow; the earlier `736649` versus `744825` mismatch is no longer treated as a standalone release blocker.
+- Pickupable/special-workable lifecycle support, Reactable edge cases, deliberate navigation interruption, Sweepy support, and broader synchronization coverage remain future development items rather than reasons to reopen the completed 0.8.0.4 release.
+- **Lifecycle/readiness work is merged into `develop`.** GitHub reports PR #83 merged on 2026-10-07 at 08:46:45 UTC, from head `cd14ac71bccb1a960f59ba92df0a4abf8cdb1c27`, producing merge commit `c1c93cb5ab2ae839d28d36d32eff9a565b4f111f` on `develop`.
+- The join-overlay/readiness correction is runtime verified for one LiteNetLib joining client: the same persistent logical player identity survived the intentional loading disconnect/reconnect, the host overlay remained active, and completion occurred at final `Ready` after `ConnectionFlowCompleted` / `InGame`.
+- Steamworks support for the same stable-`PlayerId` pending-join flow is source-reviewed only; no Steam multiplayer runtime verification is claimed. Riptide is intentionally excluded because its current `PlayerId` changes across reconnect.
+- **Current client lifecycle is the later transport-preserving rebuild.** Git/source ancestry shows the old pending-join/loading-cache/cached-reconnect mechanisms were removed and normal synchronization/world replacement now preserves the transport connection. Exact conformance to every October 7 generation/reset/admission proposal and the complete cross-transport runtime matrix remain unverified.
+- **Synchronization pause ownership is known, full-interval coverage is not.** The host pauses after accepted `BeginSynchronization` in `GameServerHardSync.PerformHardSync`, the client pauses in `GameClient.BeginSynchronization`, and there is no automatic unpause. The source build passed with 0 errors / 203 warnings, but this does not by itself prove that host advancement is blocked for the entire snapshot/load/admission interval.
+- The PR #83 disconnect/reconnect and pending-join behavior remains verified historical implementation evidence; it is not the current normal-load architecture.
+- **Active next work:** complete the PR #63 legal/compliance remediation, resolve copied-source provenance and repository-history exposure, settle the exact intended release commit, and only then proceed to exact-artifact build/runtime verification and release gating. Re-review provenance for assets first added or changed after the verified MIT baseline.
+
+## Current rebuilt transport-preserving client lifecycle
+
+**Evidence classification:** Current Git/source lineage contains the rebuilt lifecycle; exact clause-by-clause conformance and complete runtime matrix are not independently revalidated for the final checked `develop` head.
+
+The verified `develop` ancestry contains the later client-lifecycle rebuild and the cleanup sequence that removed the old loading-client cache, pending joins, legacy cached connection logic, and `readyToProcess`. The current lifecycle is organized around:
+
+```text
+Disconnected
+→ Connecting
+→ Connected
+→ LoadingWorld
+→ InGame
+```
+
+Normal world replacement preserves the transport connection rather than using the PR #83 intentional disconnect/reconnect as the normal success path. The client remains transport-connected through `LoadingWorld`; readiness is submitted from the world-spawn completion path, and the client enters `InGame` only after matching host synchronization completion.
+
+The current lifecycle also separates identities by purpose: persistent/logical player identity identifies who the player is, the active synchronization ID identifies which synchronization is in progress, and transport-specific connection-attempt guards prevent stale callbacks from affecting a replacement attempt.
+
+During loading/synchronization, ordinary in-game `NetworkBehaviour` traffic is gated rather than treated as normal gameplay. However, the detailed October 7 proposal—formal load-generation APIs, complete recursive wrapper classification, a named centralized reset boundary, explicit graph-verification acknowledgement, and exact per-player admission semantics—has not been re-audited clause by clause against the final checked `develop` source. Those details remain an audit checklist, not automatic implementation claims.
+
+The host pause-acquisition point is now known: `GameServerHardSync.PerformHardSync` pauses after accepted `BeginSynchronization`; the client pauses in `GameClient.BeginSynchronization`; no automatic unpause is performed at synchronization completion. This simplification built with 0 errors and 203 warnings. What remains unverified is whether the acquired paused state fully covers the entire baseline/load interval in every relevant path; no exact-release-artifact runtime proof is claimed.
 
 ## Verified fixes and results
+
+### Historical PR #83 client lifecycle, readiness, and join overlay
+
+The following behavior is verified for the PR #83 implementation and is retained as historical regression evidence. It does not describe the later rebuilt normal-load lifecycle.
+
+Verified implementation behavior:
+
+- `Loading` is retained as actual readiness state rather than being treated as transient presentation only.
+- The host retains a pending join across the intentional loading disconnect on supported transports.
+- `IsEveryoneReady()` requires no pending joins and every relevant participant to be exactly `Ready`.
+- Final completion is the joining client's `Ready` after `ConnectionFlowCompleted` / `InGame`; save-transfer completion, `Game.OnSpawn`, and reconnect are not treated as completion.
+- Existing readiness/status packets remain the join-overlay presentation mechanism; no independent overlay authority was added.
+- `CancelPendingJoin()` removes an `Unready` pending join on disconnect/unregister, including Steam lobby removal, while preserving a `Loading` join for the intentional reconnect.
+
+Runtime evidence: one LiteNetLib joining-client test passed for the complete join/load/disconnect/reconnect/final-Ready and host-overlay lifetime path. This also supports reuse of LiteNetLib's persistent logical `PlayerId` for pending-join correlation in that scenario.
+
+Evidence limits:
+
+- The three-peer host + already-connected Client A + joining Client B overlay scenario has not been runtime tested.
+- Overlapping B/C joins have not been runtime tested.
+- Steamworks is source-supported only.
+- Riptide does not participate in stable pending-join correlation.
+- A player that reaches `Loading` and permanently disappears can leave the pending join indefinitely; no timeout policy is implemented or verified.
+- The last source review found no blocker at PR head `cd14ac71...`, but GitHub showed no CI/status checks for that head. This Project has no new exact-head local build result to add; the merge is Git-verified, not newly build- or release-verified here.
 
 ### Ordinary multitool / worker animation
 
@@ -83,6 +135,22 @@ Final runtime verification:
 
 **Assessment:** Milestone 2 is complete and the Navigator arrival-ordering bug is fixed for the tested scope. Milestone 3 deliberate genuine-navigation interruption is next.
 
+### Storage rebuild / `ClearStorage`
+
+Source inspection identified the prior client packet-handler failure at `BuildingUtils.ClearStorage`, where a `Storage.items` entry could already be null or Unity-destroyed before `DeleteObject()` was called. Multiplayer item-destruction/replay paths can leave such stale references in the client-side collection even though vanilla storage lifecycle normally removes entries first.
+
+The narrow release fix skips null/destroyed entries while still clearing the collection and rebuilding from authoritative state.
+
+Runtime regression after the fix showed substantial paired multiplayer item/storage-related activity with:
+
+- no recurrence of the old `StorageSyncer.OnStorageChanged -> BuildingUtils.ClearStorage` exception,
+- no `NullReferenceException`,
+- no packet-handler exception attributable to this path.
+
+**Evidence limit:** the tested build did not emit an explicit `StorageSyncer.OnStorageChanged` positive-control diagnostic, so exact invocation count and exact rebuild-convergence trace cannot be claimed.
+
+**Assessment:** Accepted for the 0.8.0.4 release scope with the trace limitation preserved.
+
 ### Reactable authorization
 
 Previously verified vanilla lifecycle behavior:
@@ -105,7 +173,7 @@ The later preferred architecture is now visible in source:
 
 ### Game speed
 
-Current source contains `GameSpeedSyncer` with:
+The earlier inspected source contained `GameSpeedSyncer` with:
 
 - immediate command/RPC propagation,
 - host validation of the three supported speeds,
@@ -114,15 +182,25 @@ Current source contains `GameSpeedSyncer` with:
 - nested/re-entrant apply-depth protection,
 - join/resync request behavior.
 
-**Assessment:** Implementation present. No fresh test evidence was generated while preparing this document.
+The later lifecycle/speed simplification rejected and removed `RequestReSync` and lifecycle-specific load guards. `ReadyManager` no longer owns `IsSimulationLocked`, and the generic `MultiplayerOverlay` does not own pausing. Instead, pause is initiated once by `GameServerHardSync.PerformHardSync` after accepted `BeginSynchronization` on the host and by `GameClient.BeginSynchronization` on the client. There is no automatic unpause after synchronization.
 
-### Initialization crash architecture
+**Evidence:** The simplification built successfully with 0 errors and 203 warnings. No runtime synchronization/speed matrix or exact-release-artifact verification was completed. The earlier multiplayer matrix therefore remains outstanding for applicable ordinary `GameSpeedSyncer` behavior.
 
-Previous investigations traced unrelated building crashes to an unsafe client `Operational` shadow/getter architecture that could alter derived state during prefab initialization before dependent components finished `OnSpawn`.
+### Session centralization and PR #86
 
-The October 3 repository audit corrected the earlier Project assumption that this synchronization had been removed from `experiment`. The full-removal commit `484bc805dd13e1755b2648192c55b23bd1e7b11e` exists only on `ren/test-0.8.0`. Current `experiment` still contains the Operational packets/patches/receiver, with PR #53 changing the client path so vanilla/local state is used until host state is available.
+The intended ownership boundary is shared session state in `MultiplayerSession`/common networking, while `GameClient` retains the current client lifecycle, `ReadyManager`/`GameServerHardSync` retain synchronization ownership, and each transport retains its mechanics and identity rules.
 
-**Assessment:** The unsafe initialization-time behavior remains architecturally rejected, but Operational synchronization itself is present in the release candidate and requires paired release testing. Longer-term input-level synchronization remains a possible refinement, not the current implementation status.
+At the time checked, PR #86 targeted `develop` `3ddad5ad7fcaace77292c3f4b4a2218c0aa5db1f` from head `a32139b48031202ee41f6bd77bd16701b4b51c35`. GitHub metadata reported mergeable, 2 commits, 12 changed files, and +216/-149. The changed scope was session centralization and transport integration.
+
+**Evidence limit:** Mergeability and diff metadata do not establish behavioral safety. The regression-focused source review and runtime verification were still pending; PR #86 was not established here as merged or release-verified.
+
+### Operational/power synchronization
+
+Previous investigations traced initialization crashes to unsafe client-side `Operational` shadow/getter behavior that could alter derived state before dependent components completed spawning.
+
+For the released 0.8.0.4 work, the user reports that their custom Operational/power changes were removed and the upstream fix was merged. The final upstream commit/hash and exact released source tree were not independently captured in this Project, so no stronger Git claim is made here.
+
+**Assessment:** No separate custom Operational/power release track remains active. Future regressions should be evaluated against the upstream implementation actually present in the current repository.
 
 ## Current implementation snapshot
 
@@ -135,11 +213,11 @@ The October 3 repository audit corrected the earlier Project assumption that thi
 | Navigator semantic arrival publication ordering | Present; build succeeded; runtime-verified for tested arrival-to-work cases | High for tested scope; exact Stop/sequence trace unavailable |
 | StandardWorker lifecycle sync | Present and verified for ordinary work | High |
 | Local multitool target reconstruction | Verified 65/65 | High for tested set |
-| Pickupable StandardWorker lifecycle sync | Excluded/missing on client; defect supported by source and paired diagnostics | High for inspected scope; fix not implemented |
+| Pickupable StandardWorker lifecycle sync | Specialized lifecycle remains unsupported/deferred beyond the release scope | High for previously inspected limitation |
 | Reactable one-shot authorization | Present | Medium; broader tests needed |
 | Reaction presentation/state separation | Architectural target | Medium / partial |
 | Game-speed revisioned RPC | Present | Medium-high; not freshly tested here |
-| Operational/power synchronization | Present in `experiment` with PR #53 fallback behavior; release verification required | Medium-high for source presence; runtime release behavior not yet verified |
+| Operational/power synchronization | User reports custom work removed and upstream fix merged for release | User-reported release state; exact upstream commit/hash not captured here |
 | Session/epoch envelope | Whole-mod target; implementation coverage not audited here | Unknown/partial |
 | Command IDs, results, deduplication | Whole-mod target; implementation coverage not audited here | Unknown/partial |
 | Consistent save cursor + catch-up journal + ready barrier | Whole-mod target | Not verified |
@@ -154,7 +232,8 @@ The October 3 repository audit corrected the earlier Project assumption that thi
 - Pickupable is a confirmed skipped-workable defect: the client lacks its `StandardWorker` / `MultitoolController` lifecycle while workable-level events still replay. Other special/skipped workables must also be assessed separately.
 - Proper Pickupable lifecycle synchronization is deferred. The possible `AnimSyncer` visual fallback is only an unimplemented, unverified proposal and must not be treated as the final lifecycle design.
 - Exact host Stop publication counts, navigation sequence continuity, and classification of unrelated Stops remain unverified because the required diagnostics were disabled during the final run.
-- Debug logging is still enabled in some animation/Reactable patches and may be too noisy for normal builds.
+- Sweepy is currently treated as an unsupported/missing multiplayer feature. Dedicated identity/navigation/animation synchronization support is deferred until it can be tested carefully.
+- Debug logging may still remain in some animation/Reactable patches and should be reviewed separately if it becomes noisy.
 
 ### Reactables
 
@@ -174,7 +253,7 @@ The October 3 repository audit corrected the earlier Project assumption that thi
 
 - Current code has not yet been inventoried against the primary architecture’s ownership/coverage ledger.
 - Session ID, baseline epoch, per-stream sequence/version, and old-epoch rejection need an implementation audit.
-- Join/hard-sync behavior needs verification against the `T/J` consistent-cut, catch-up journal, and readiness-barrier design.
+- Join/hard-sync lifecycle/readiness behavior was first verified in the PR #83 disconnect/reconnect implementation and was later rebuilt into the current transport-preserving client lifecycle. The active priority is PR #86 regression review, exact release-baseline selection, legal/compliance audit, and exact-artifact verification; broader comparison with the proposed `T/J` consistent-cut and catch-up-journal design remains future architecture work.
 - Entity identity persistence/baseline mapping for existing and nested items remains a gating design spike.
 - Command IDs, host deduplication, explicit rejection reasons, and reconnect boundaries need a domain-by-domain audit.
 - Region/entity hashes and targeted refresh behavior are target architecture, not confirmed universal implementation.
@@ -182,24 +261,67 @@ The October 3 repository audit corrected the earlier Project assumption that thi
 
 ### Power/Operational
 
-- Operational/power synchronization remains present in `experiment`; do not describe it as removed.
-- PR #53's fallback behavior needs paired release-candidate testing across initialization and normal state changes.
-- Input-level synchronization remains a possible longer-term design direction and should not be presented as current implementation.
+- The user reports that custom Operational/power work was removed before release and the upstream fix was merged.
+- The exact final upstream commit/hash is not independently recorded in this Project evidence.
+- Do not continue treating the earlier PR #53/custom Operational path as an active 0.8.0.4 release blocker unless current repository inspection shows it is still present.
+- Longer-term input-level synchronization remains only a possible future architectural direction.
 
-## Release-candidate gate (2026-10-03)
+## 0.8.0.4 release outcome
 
-The current release target is staged version **0.8.0.4**, but no tag should be created until a clean release commit is established and that exact hash is built/tested. The audit found that the authoritative Mac checkout had nine staged paths, so the tested `0.8.0.4` artifact is not identical to clean HEAD `0bec442...` (`0.8.0.3`).
+**Status:** Released successfully, based on the user's confirmation.
 
-Current blockers/evidence requiring closure:
+The October 3 release-candidate audit remains historical evidence of the integration process, not proof of the final released commit hash. The exact final release commit/tag/hash was not independently captured in the Project and is therefore intentionally left unspecified.
 
-1. **Pickupable:** generic `WorkableSyncer.RpcUpdateWorkable` can still call `Pickupable.OnCompleteWork` on the client and throw `NullReferenceException`; the StandardWorker exclusion does not solve this second path.
-2. **Reactables:** current paired logs show repeated authorization failures where `NetId == 0`.
-3. **Sweepy:** patched navigation paths report missing `NavigatorSyncer`; eligibility/ownership must be decided and verified.
-4. **Storage rebuild:** current logs contain separate storage-rebuild exceptions requiring focused investigation.
-5. **Exact artifact:** create a clean release commit, build that exact hash in Release configuration, and use that artifact for paired host/client regression.
-6. **Compatibility metadata:** current project target build is `736649` while October 3 logs ran ONI build `744825`; review supported-build metadata before release rather than changing it without verification.
+Release-scope disposition of the former blockers:
 
-Release regression should cover Navigator arrival, ordinary StandardWorker work, Pickupable/autosweeper collection, AnimSyncer symbol visibility, Reactables, speed/pause, Operational/power state, and scenario spawning. Preserve previous successful evidence, but mark the final release commit separately as pass/fail.
+1. **Storage rebuild:** narrow `ClearStorage` null/destroyed-entry guard accepted; subsequent paired regression did not reproduce the old exception. Positive-control trace limitation preserved.
+2. **Sweepy:** not promoted into the synchronization stack for this release; treated as an unsupported/missing feature and deferred for dedicated future testing.
+3. **Operational/power:** user's custom changes removed; upstream fix merged according to the user's release report.
+4. **Compatibility metadata:** handled through the normal game update/build-generated metadata workflow rather than as a standalone blocker.
+5. **Pickupable / Reactable edge cases:** remain future development limitations where applicable; they did not prevent the user from completing the 0.8.0.4 release.
+
+Historical successful tests remain evidence for the builds in which they were obtained. Do not attach them to an unknown exact release hash without separate proof.
+
+## Historical PR #83 lifecycle/readiness implementation and later rebuild
+
+PR #83 is preserved as **historical verified implementation evidence**, not as the current normal-load lifecycle.
+
+The PR #83 runtime-supported shape was:
+
+```text
+initial client connection
+→ game-state exchange
+→ host save request/transfer
+→ client enters LoadingWorld
+→ intentional transport disconnect / teardown
+→ world load and Game.OnSpawn
+→ reconnect from cached session information
+→ hard-sync / readiness path
+→ normal gameplay
+```
+
+That implementation fixed the premature all-ready/join-overlay boundary by retaining `Loading` readiness and a pending join across the intentional disconnect for stable-identity transports. One LiteNetLib joining-client flow passed at runtime and preserved the same persistent logical player ID across disconnect/reconnect. Steamworks was source-supported only; Riptide was excluded from pending-join correlation.
+
+Later `develop` work superseded that normal-load mechanism. The rebuilt lifecycle removed the loading-client cache, pending joins, legacy cached reconnect state, and `readyToProcess`, preserved transport through normal world replacement, and cleaned up the client connection lifecycle. Therefore the PR #83 disconnect/reconnect sequence and pending-join semantics must not be described as the current shape.
+
+### Current lifecycle status
+
+At the point-in-time checked `develop` `3ddad5ad7fcaace77292c3f4b4a2218c0aa5db1f`, Git ancestry was:
+
+```text
+experiment 64a4dd6f...
+→ older upstream integration via merge/upstream-next 88e7f06c...
+  / upstream tip 1c9d7226...
+→ later rebuilt client-lifecycle chain
+→ merge/client-lifecycle 42fca889...
+→ develop 3ddad5ad...
+```
+
+This establishes that the later lifecycle replaced the PR #83 normal-load implementation in current `develop`. It does not by itself prove every detailed October 7 transport-preserving design clause or every transport/runtime scenario.
+
+Historical source findings from the earlier transport audits—Riptide duplicate disconnect notification, Steam stale state/handle paths, LiteNet explicit-disconnect callback dependence, and direct reconnect paths that can skip `Connecting`—remain useful bug history, but they must be rechecked against the rebuilt current source before being treated as current defects.
+
+PR #86 session-centralization review remains the active integration gate. Its changes must not reintroduce superseded disconnect/reconnect lifecycle ownership while centralizing shared session state.
 
 ## Recommended next tests
 
@@ -209,7 +331,7 @@ For the proper lifecycle track, first design and implement the specialized Picku
 
 For the optional temporary visual-only track, first trace the existing `AnimSyncer` scope/suppression path for Pickupable. If a narrow fallback is implemented, verify host send, client receive/playback, facing/direction/target presentation, cleanup, and non-regression of ordinary worker, Navigator, and reaction ownership. Keep this experiment explicitly provisional until paired evidence exists.
 
-### 1. Post-release-gate milestone — deliberate real-navigation-transition interruption
+### 1. Deferred animation milestone — deliberate real-navigation-transition interruption
 
 While active ordinary work is playing, deliberately trigger:
 
@@ -280,7 +402,7 @@ Use the separate **Local game mod** Work Project for source inspection, builds, 
 - update `ARCHITECTURE.md` only when a durable boundary or ownership rule changes;
 - upload the revised Project reference files to `game mod`.
 
-The local repository architecture documents were not available for this update and were not modified. Inspect `ONI_Multiplayer_Animation_Architecture.md` separately for the Navigator/worker ownership and arrival-publication details, and inspect `ONI_Together_Full_Mod_Architecture.md` to confirm whether the full-mod synchronization-boundary description needs a corresponding clarification. Compare both against these Project references before editing; do not assume changes propagate between Projects.
+The local repository architecture documents were not available for this update and were not modified. Inspect `ONI_Multiplayer_Animation_Architecture.md` separately for the Navigator/worker ownership and arrival-publication details, and inspect `ONI_Together_Full_Mod_Architecture.md` to confirm whether the full-mod synchronization-boundary description needs a corresponding clarification. The lifecycle/speed and session-centralization decisions also require inspection of any maintained networking/session or lifecycle module architecture documents in **Local game mod**. Compare local documents against these Project references before editing; do not assume changes propagate between Projects.
 
 Documentation-source exclusions for future audits:
 
@@ -300,6 +422,10 @@ Do not upload vanilla/decompiled source or assemblies. For large logs, analyze l
 | Milestone 2 Navigator arrival-publication investigation and runtime verification | `game mod` Project conversation plus Local game mod report | Not applicable | 2026-09-28 | Root cause, implementation/build result, and final 33/33 runtime verification; exact Stop counts and sequence continuity not traced |
 | Pickupable synchronization investigation | `game mod` Project conversation plus Local game mod source/log report | Not applicable | 2026-10-01 | Source/log-supported exclusion and missing client worker/multitool lifecycle; client null-start-info completion exception; paired host/client pose/start evidence; later ordinary Storage match |
 | October 3 release baseline and documentation audit | `experiment` plus staged local `0.8.0.4` state | `0bec442e13893b4da113b363a379f9fe2b74be3a` for clean HEAD | 2026-10-03 | Git/source/log audit: dirty staged tree, release-version split, merged feature presence, Pickupable generic Workable failure, Reactable zero-NetId warnings, Sweepy diagnostics, Operational correction, release mechanism |
+| October 4 release closeout | `game mod` Project conversation | Exact final release hash not captured | 2026-10-04 | User-confirmed 0.8.0.4 release; Storage disposition; Sweepy deferral; custom Operational removal/upstream merge; joining-sequence priority |
+| October 5 transport identity/lifecycle audits | `experiment` local repository audit plus paired LiteNetLib runtime logs and user Riptide startup test | `64a4dd6fa2870877868d13be034a3d8cf13f1f19` at audited HEAD; 19 staged paths; one temporary unstaged Steam client edit existed during the audit and was later removed by the user | 2026-10-05 | LiteNetLib persistent-ID join/load/reconnect/Ready runtime evidence; Riptide bootstrap polling fix source proof plus startup runtime check; Steam source-only lifecycle proof; expected-connection stale-close guard; cross-driver client-state/loading findings |
+| Lifecycle/speed simplification, current ancestry, and PR #86 preparation | `game mod` Project conversation and Local game mod reports summarized there | `develop` `3ddad5ad7fcaace77292c3f4b4a2218c0aa5db1f`; PR #86 head `a32139b48031202ee41f6bd77bd16701b4b51c35` | 2026-10-15 | Git ancestry; source/build evidence with 0 errors/203 warnings; PR metadata; no PR runtime regression verification |
+| Join-overlay/readiness implementation and PR review | `game mod` Project conversation; GitHub issues #78–#82 and PR #83 | PR head `cd14ac71bccb1a960f59ba92df0a4abf8cdb1c27`; GitHub merge commit `c1c93cb5ab2ae839d28d36d32eff9a565b4f111f` | 2026-10-07 | LiteNetLib single-join runtime result; source-reviewed readiness/pending-join and cancellation paths; Steam source-only; Riptide exclusion; GitHub issue/merge states |
 | `Reactable Step One` and `Patch Reactable Synchronization` | `game mod` Project conversations | Not applicable | 2026-09-27 | Previous vanilla lifecycle observation and design discussion; not complete authorization verification |
 | `REACTABLE_SYNC_ARCHITECTURE_STATUS.md` | Recorded as `ren/test-0.8.0` | `2bb0b6b938a7e1b54ae0b7426b1a4879b6af7b07` reported in conversation; Git object not verified | 2026-09-27 | Provisional Reactable architecture/status |
 
@@ -308,12 +434,20 @@ Do not upload vanilla/decompiled source or assemblies. For large logs, analyze l
 - The primary whole-mod document is a target architecture, while several supporting infrastructures already exist. A repository-wide coverage audit is still required before assigning implementation status to session epochs, command deduplication, journals, consistent save cursors, tombstones, or targeted reconciliation.
 - The local source inspected for Reactables, animation, workers, and game speed was not tied to a verified commit/branch. Preserve its findings as source inspection, but record the exact commit before treating them as release evidence.
 - The Reactable document’s reported commit `2bb0b6b...` could not be verified in the currently fetched Git object database.
-- Legitimate Navigator transitions continued during the tested ordinary-work run, but deliberate interruption of active worker playback by real transitions remains untested and is the next milestone.
+- Legitimate Navigator transitions continued during the tested ordinary-work run, but deliberate interruption of active worker playback by real transitions remains untested and is deferred behind the current release-preparation work.
 - Milestone 2 runtime behavior is strongly supported, but exact Stop publication counts, navigation sequence continuity, and unrelated Stop classification cannot be reconstructed from the final logs because those diagnostics were disabled.
 - Pickupable's missing client lifecycle is supported by source and paired diagnostics, but neither the proper lifecycle fix nor the proposed `AnimSyncer` visual fallback has been implemented or verified.
 - `GameSpeedSyncer` is present in source, but the requested multiplayer matrix has not been run in the evidence available here.
 
 ## Revision history
+
+- **2026-10-15 (reconciliation):** Reclassified the PR #83 intentional disconnect/reconnect and pending-join lifecycle as historical verified evidence; documented the later transport-preserving `develop` rebuild as the current implementation lineage; removed the stale claim that transport-preserving loading is unimplemented; and preserved uncertainty about exact October 7 design conformance and full-interval pause coverage.
+- **2026-10-15:** Recorded the verified `develop` ancestry and point-in-time SHAs; lifecycle/speed simplification build result and runtime limits; PR #86 metadata and pending regression review; session-centralization ownership boundary; and the legal/licensing/compliance audit as a pre-release gate. No merge, runtime result, or release artifact was inferred.
+- **2026-10-07:** Recorded transport-preserving normal loading as approved source-reviewed design only, with no implementation/build/runtime claim. Added the generation/admission/reset/gate/reconstruction/`WorldLoadCompleted`/final-`Ready` contract, retained reconnect as transport-loss fallback, and made host advancement versus pause/catch-up a blocking prerequisite.
+- **2026-10-07:** Removed stale priority wording that still described join/hard-sync investigation as active; PR #83 lifecycle/readiness work is complete for its tested scope, and the next active priority is `develop` → `experiment` release integration and exact-artifact verification.
+- **2026-10-07:** Recorded the implemented lifecycle/readiness/join-overlay boundary and its LiteNetLib single-client runtime verification; kept Steam source-only and Riptide excluded; recorded pending-join cancellation and the abandoned-`Loading` limitation. GitHub verification shows issues #78–#82 remain open and PR #83 merged into `develop` at `c1c93cb5ab2ae839d28d36d32eff9a565b4f111f`. The next `develop`→`experiment` integration and release remain unverified future work.
+- **2026-10-05:** Recorded the transport identity/lifecycle investigation. LiteNetLib persistent identity is runtime-verified for the tested join/save/load/reconnect/Ready path; the Riptide bootstrap polling fix is source-proven and startup-tested; Steam lifecycle remains source-only, with stale replacement-close protection correctly wired. Recorded source-proven client lifecycle inconsistencies in Riptide, Steam, and LiteNetLib, and the removal of the temporary Steam explicit-disconnect callback edit after it was shown to break `LoadingWorld`. Narrowed the next development priority from the broad joining sequence to the world-loading sequence.
+- **2026-10-04:** Recorded the user-confirmed successful 0.8.0.4 release without inventing a final commit/tag/hash; accepted the Storage `ClearStorage` fix with its runtime trace limitation; reclassified Sweepy as unsupported/deferred rather than a release blocker; recorded removal of custom Operational/power work and merge of the upstream fix as user-reported release state; removed compatibility metadata as a standalone blocker; and made the multiplayer client joining sequence the immediate post-release development priority.
 
 - **2026-10-03:** Added documentation-source exclusions for personal `docs/Tracking.md` / `docs/AI logs.md` and outdated `TRELLO_PROGRESS_STATUS.md`; these files no longer participate in automatic status/release audits.
 - **2026-10-03:** Established merged `experiment` baseline `0bec442e13893b4da113b363a379f9fe2b74be3a`; separated clean HEAD `0.8.0.3` from staged/tested `0.8.0.4`; preserved prior successful runtime evidence without promoting it to exact-release verification; added Pickupable generic Workable, Reactable zero-NetId, Sweepy, storage-rebuild, exact-artifact and compatibility release blockers; corrected Operational synchronization status; and documented manual Local game mod switching after automatic handoff failure.

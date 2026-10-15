@@ -85,9 +85,6 @@ namespace ONI_Together.Networking.OxySync.Components
                 SpeedControlScreen.Instance?.IsPaused ?? true
             );
 
-            if (MultiplayerSession.IsClient)
-                RequestReSync();
-
             if (ENABLE_LOG)
                 DebugConsole.Log($"[GameSpeedSyncer][OnSpawn] set speed to {_authoritativeState}.");
         }
@@ -100,18 +97,6 @@ namespace ONI_Together.Networking.OxySync.Components
             if (Instance == this)
                 Instance = null;
             base.OnCleanUp();
-        }
-
-        public void RequestReSync()
-        {
-            try
-            {
-                CallCommand(nameof(CmdSetSpeed), (object)null);
-            }
-            catch (Exception ex)
-            {
-                DebugConsole.LogError($"[GameSpeedSyncer][RequestReSync] {ex}");
-            }
         }
 
         public void RequestSetSpeed(SpeedMode speed, bool paused)
@@ -145,7 +130,7 @@ namespace ONI_Together.Networking.OxySync.Components
             if (!isServer)
                 return;
             
-            if (state!= null && !IsValidSpeed(state.Speed))
+            if (state == null || !IsValidSpeed(state.Speed))
                 return;
 
             if (ENABLE_LOG)
@@ -155,17 +140,15 @@ namespace ONI_Together.Networking.OxySync.Components
                     $"IsPaused: {_authoritativeState.Paused} -> {state.Paused}, " +
                     $"isApplying: {IsApplyingNetworkState}, currentRevision: {_revision}");
 
-            if (state != null && !ApplySpeed(state.Speed, state.Paused))
+            if (!ApplySpeed(state.Speed, state.Paused))
                 return;
 
             _revision++;
 
-            var validatedState = state ?? _authoritativeState;
-
             try
             {                
                 if (MultiplayerSession.SessionHasPlayers)
-                    CallClientRpc(nameof(RpcApplySpeed), _revision, validatedState.Speed, validatedState.Paused);
+                    CallClientRpc(nameof(RpcApplySpeed), _revision, state.Speed, state.Paused);
 
                 if (ENABLE_LOG)
                     DebugConsole.Log(
@@ -176,7 +159,7 @@ namespace ONI_Together.Networking.OxySync.Components
             catch (Exception ex)
             {
                 DebugConsole.LogError(
-                    $"[GameSpeedSyncer][CmdSetSpeed] Failed to set speed to {validatedState.Speed}, " +
+                    $"[GameSpeedSyncer][CmdSetSpeed] Failed to set speed to {state.Speed}, " +
                     $"isApplying: {IsApplyingNetworkState}, currentRevision: {_revision}. {ex}");
             }
         }

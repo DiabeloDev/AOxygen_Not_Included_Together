@@ -49,6 +49,16 @@ This community fork is maintained by **Liang Chen** and contains additional fixe
 
 This project is an unofficial community project and is **not affiliated with, endorsed by, or supported by Klei Entertainment**.
 
+### Release Lineage and License Boundary
+
+The `0.8.0.5` release line represented by PR #63 is the final release intended to track and integrate changes from the original upstream repository.
+
+The last upstream code imported into this release line is upstream commit `1c9d7226c7f9dbde7c303a11af4adf5fd5c2ffbb`, merged on October 5, 2026 while that code was published under the MIT License. The upstream license was changed later, on October 11, 2026. Those later source-available license commits are not part of this release's Git ancestry.
+
+Future releases from this repository are intended to be developed as an independent community-maintained project. Upstream changes made after the license transition will not be incorporated unless their licensing and any required permissions are reviewed separately.
+
+See [`LICENSE.md`](LICENSE.md), [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), and [`ASSET_PROVENANCE.md`](ASSET_PROVENANCE.md) for the release's license, bundled-component notices, and asset review status.
+
 ---
 
 ## Multiplayer Demo

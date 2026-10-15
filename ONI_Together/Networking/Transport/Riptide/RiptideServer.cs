@@ -1,8 +1,9 @@
-﻿using System;
+using System;
 using Riptide;
 using Riptide.Utils;
 using ONI_Together.DebugTools;
 using ONI_Together.Misc;
+using ONI_Together.Networking.States;
 using ONI_Together.Networking.Packets.Architecture;
 using Shared.Profiling;
 using ONI_Together.Networking.Transfer;
@@ -21,10 +22,6 @@ namespace ONI_Together.Networking.Transport.Lan
         private static Server _server;
         private static Client _client; // Server client (Other users will use GameClient)
         private TcpFileTransferServer _tcpTransfer;
-        private Dictionary<ulong, float> _loadingClients = new Dictionary<ulong, float>();
-        private List<ulong> _expiredLoadingClients = new List<ulong>();
-        private HashSet<ulong> _reconnectedFromLoad = new HashSet<ulong>();
-
         public TcpFileTransferServer TcpTransfer => _tcpTransfer;
 
         public static Server ServerInstance
@@ -113,8 +110,7 @@ namespace ONI_Together.Networking.Transport.Lan
             CLIENT_ID = _client.Id;
             //AddClientToList(CLIENT_ID);
             DebugConsole.Log("[RiptideServer] Host client connected to server!");
-            MultiplayerSession.SetHost(GetClientID());
-            MultiplayerSession.InActiveSession = true;
+            MultiplayerSession.RegisterAsHost();
 
             string hostName = Utils.GetLocalPlayerName();
             OxySyncChat.AddSystemMessage(string.Format(STRINGS.UI.MP_CHATWINDOW.CHAT_CLIENT_JOINED, hostName));
@@ -124,11 +120,12 @@ namespace ONI_Together.Networking.Transport.Lan
         {
             using var _ = Profiler.Scope();
 
+            ulong previousClientId = CLIENT_ID;
             CLIENT_ID = Utils.NilUlong();
             //RemoveClientFromList(CLIENT_ID);
             DebugConsole.Log("[RiptideServer] Host client disconnected from server!");
-            MultiplayerSession.HostUserID = Utils.NilUlong();
-            MultiplayerSession.InActiveSession = false;
+            MultiplayerSession.UnregisterClient(previousClientId, null);
+            MultiplayerSession.UnRegisterAsHost(null);
         }
 
         private void ServerOnClientConnected(object sender, ServerConnectedEventArgs e)
@@ -136,23 +133,12 @@ namespace ONI_Together.Networking.Transport.Lan
             using var _ = Profiler.Scope();
 
             ulong clientId = e.Client.Id;
-            MultiplayerPlayer player;
-            if (!MultiplayerSession.ConnectedPlayers.TryGetValue(clientId, out player))
-            {
-                player = new MultiplayerPlayer(clientId);
-                MultiplayerSession.ConnectedPlayers.Add(clientId, player);
-            }
-            player.Connection = e.Client;
+            MultiplayerSession.RegisterClient(clientId, e.Client);
 
             e.Client.CanQualityDisconnect = false;
             e.Client.MaxSendAttempts = 30;
             e.Client.MaxAvgSendAttempts = 12;
             e.Client.AvgSendAttemptsResilience = 128;
-
-            if (clientId == CLIENT_ID)
-            {
-                player.PlayerName = Utils.GetLocalPlayerName();
-            }
 
             AddClientToList(e.Client.Id);
             DebugConsole.Log($"New client connected: {clientId}");
@@ -164,20 +150,15 @@ namespace ONI_Together.Networking.Transport.Lan
 
             ulong clientId = e.Client.Id;
 
-            RemoveClientFromList(clientId);
-
-            if (MultiplayerSession.ConnectedPlayers.TryGetValue(clientId, out MultiplayerPlayer player))
+            if (MultiplayerSession.UnregisterClient(clientId, null, e.Client))
             {
-                player.Connection = null;
-                MultiplayerSession.ConnectedPlayers.Remove(clientId);
+                RemoveClientFromList(clientId);
                 DebugConsole.Log($"Player {clientId} disconnected.");
             }
             else
             {
                 DebugConsole.LogWarning($"Disconnected client {clientId} was not found in ConnectedPlayers.");
             }
-            ReadyManager.RefreshReadyState();
-            MultiplayerSession.RefreshAllPlayerCursors();
         }
 
         private void OnServerMessageReceived(object sender, MessageReceivedEventArgs e)
@@ -303,8 +284,7 @@ namespace ONI_Together.Networking.Transport.Lan
                 }
             }
 
-            // Clear our session player list
-            MultiplayerSession.ConnectedPlayers.Clear();
+            MultiplayerSession.UnRegisterAsHost(null);
         }
 
         public override void OnMessageRecieved()
@@ -319,33 +299,6 @@ namespace ONI_Together.Networking.Transport.Lan
             _server?.Update();
             _client?.Update();
             UpdateServerBandwidth();
-
-            if (_loadingClients.Count > 0)
-            {
-                float now = UnityEngine.Time.unscaledTime;
-                _expiredLoadingClients.Clear();
-                foreach (var kvp in _loadingClients)
-                {
-                    if (now - kvp.Value > Configuration.Instance.Host.TimeoutSeconds)
-                    {
-                        _expiredLoadingClients.Add(kvp.Key);
-                    }
-                }
-                foreach (var id in _expiredLoadingClients)
-                {
-                    _loadingClients.Remove(id);
-                }
-            }
-        }
-
-        public bool ConsumeReconnectFromLoad(ulong id)
-        {
-            return _reconnectedFromLoad.Remove(id);
-        }
-
-        public void MarkClientLoading(ulong id)
-        {
-            _loadingClients[id] = UnityEngine.Time.unscaledTime;
         }
 
         public void AddClientToList(ulong id)
@@ -356,15 +309,6 @@ namespace ONI_Together.Networking.Transport.Lan
                 return;
 
             ClientList.Add(id);
-
-            // A loading client reconnects with a new Riptide ID, so we consume one loading entry
-            if (_loadingClients.Count > 0)
-            {
-                var enumerator = _loadingClients.GetEnumerator();
-                enumerator.MoveNext();
-                _loadingClients.Remove(enumerator.Current.Key);
-                _reconnectedFromLoad.Add(id);
-			}
 			var boxedId = Boxed<ulong>.Get(id);
 			Game.Instance?.Trigger(MP_HASHES.OnPlayerJoined,boxedId);
             boxedId.Release();
@@ -378,13 +322,9 @@ namespace ONI_Together.Networking.Transport.Lan
                 return;
 
             ClientList.Remove(id);
-
-            if (!_loadingClients.ContainsKey(id))
-            {
-                string name = MultiplayerSession.GetPlayer(id)?.PlayerName ?? $"Player {id}";
-                OxySyncChat.AddSystemMessage(string.Format(STRINGS.UI.MP_CHATWINDOW.CHAT_CLIENT_LEFT, name));
-                Utils.PauseSimOnPlayerLeft();
-			}
+            string name = MultiplayerSession.GetPlayer(id)?.PlayerName ?? $"Player {id}";
+            OxySyncChat.AddSystemMessage(string.Format(STRINGS.UI.MP_CHATWINDOW.CHAT_CLIENT_LEFT, name));
+            Utils.PauseSimOnPlayerLeft();
 			var boxedId = Boxed<ulong>.Get(id);
 			Game.Instance?.Trigger(MP_HASHES.OnPlayerLeft, boxedId);
             boxedId.Release();
@@ -422,14 +362,18 @@ namespace ONI_Together.Networking.Transport.Lan
                 }
 
                 DebugConsole.Log($"[RiptideServer] Kicking client {clientId}");
-                _server.DisconnectClient(conn);
-
-                // OnClientDisconnected should disconnect so we shouldn't need to cleanup here
+                MultiplayerSession.UnregisterClient(clientId, CloseConnection, conn);
             }
             else
             {
                 DebugConsole.LogError($"[RiptideServer] KickClient: Invalid connection type for {clientId}");
             }
+        }
+
+        private void CloseConnection(object connection)
+        {
+            if (connection is Connection conn && !conn.IsNotConnected)
+                _server.DisconnectClient(conn);
         }
     }
 }

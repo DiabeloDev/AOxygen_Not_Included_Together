@@ -1,4 +1,5 @@
 using ONI_Together.Misc;
+using ONI_Together.Networking.States;
 using Shared.Profiling;
 using UnityEngine;
 
@@ -33,10 +34,9 @@ namespace ONI_Together.Networking.Components
 					return;
 			}
 
-			//if (!MultiplayerSession.InSession)
-			//	return;
-
-            if (MultiplayerSession.IsHost)
+            if (GameServer.State == ServerState.Started &&
+                (MultiplayerSession.IsHost ||
+                 NetworkConfig.transport == NetworkConfig.NetworkTransport.RIPTIDE))
 			{
 				GameServer.Update();
 			}

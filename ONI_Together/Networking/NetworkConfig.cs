@@ -107,8 +107,8 @@ namespace ONI_Together.Networking
                     break;
             }
 
+            MultiplayerSession.Clear();
             GameClient.Handle(ClientEvent.TransportDisconnected);
-            Game.Instance?.Trigger(MP_HASHES.OnDisconnected);
         }
 
         private static void StopSteamworks()
@@ -125,7 +125,6 @@ namespace ONI_Together.Networking
                 GameClient.Disconnect();
 
             NetworkIdentityRegistry.Clear();
-            MultiplayerSession.Clear();
 
             SelectToolPatch.UpdateColor();
         }

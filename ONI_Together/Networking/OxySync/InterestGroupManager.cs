@@ -8,6 +8,16 @@ namespace ONI_Together.Networking.OxySync
     {
         private static readonly Dictionary<ulong, HashSet<int>> _playerGroups = new();
 
+        private static bool _initialized = false;
+
+        public static void Initialize()
+        {
+            if (_initialized) return;
+
+            MultiplayerSession.OnClientDisconnected += ClearPlayer;
+            _initialized = true;
+        }
+
         public static void AddPlayerToGroup(ulong playerId, int groupId)
         {
             if (!_playerGroups.TryGetValue(playerId, out var groups))
@@ -31,6 +41,11 @@ namespace ONI_Together.Networking.OxySync
         public static void ClearPlayer(ulong playerId)
         {
             _playerGroups.Remove(playerId);
+        }
+
+        internal static void Clear()
+        {
+            _playerGroups.Clear();
         }
 
         public static bool IsPlayerInGroup(ulong playerId, int groupId)

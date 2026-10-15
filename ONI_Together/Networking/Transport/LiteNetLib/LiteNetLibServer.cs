@@ -113,30 +113,12 @@ namespace ONI_Together.Networking.Transport.Lan
             }
 
             // Register Local Host
-            MultiplayerSession.SetHost(hostId);
-            MultiplayerSession.InActiveSession = true;
+            MultiplayerSession.RegisterAsHost();
 
             ClientList.Clear();
             ClientList.Add(hostId);
 
-            if (!MultiplayerSession.ConnectedPlayers.TryGetValue(hostId, out var hostPlayer))
-            {
-                hostPlayer = new MultiplayerPlayer(hostId)
-                {
-                    PlayerName = Utils.GetLocalPlayerName(),
-                    Connection = null
-                };
-                MultiplayerSession.ConnectedPlayers[hostId] = hostPlayer;
-            }
-            else
-            {
-                hostPlayer.PlayerName = Utils.GetLocalPlayerName();
-                hostPlayer.Connection = null;
-            }
-            hostPlayer.readyState = ClientReadyState.Ready;
-            MultiplayerSession.KnownPlayerNames[hostId] = hostPlayer.PlayerName;
-
-            OxySyncChat.AddSystemMessage(string.Format(STRINGS.UI.MP_CHATWINDOW.CHAT_CLIENT_JOINED, hostPlayer.PlayerName));
+            OxySyncChat.AddSystemMessage(string.Format(STRINGS.UI.MP_CHATWINDOW.CHAT_CLIENT_JOINED, Utils.GetLocalPlayerName()));
         }
 
         private void OnConnectionRequest(ConnectionRequest request)
@@ -213,13 +195,7 @@ namespace ONI_Together.Networking.Transport.Lan
             identityWriter.Put(NetworkConfig.GetLocalID());
             peer.Send(identityWriter, DeliveryMethod.ReliableOrdered);
 
-            if (!MultiplayerSession.ConnectedPlayers.TryGetValue(clientId, out var player))
-            {
-                player = new MultiplayerPlayer(clientId);
-                MultiplayerSession.ConnectedPlayers[clientId] = player;
-            }
-            player.Connection = peer;
-            player.ProtocolVerified = false;
+            MultiplayerSession.RegisterClient(clientId, peer);
 
             if (!ClientList.Contains(clientId))
                 ClientList.Add(clientId);
@@ -239,7 +215,7 @@ namespace ONI_Together.Networking.Transport.Lan
                 _clientIdByPeerId.Remove(peer.Id);
                 ClientList.Remove(clientId);
 
-                if (MultiplayerSession.RemoveConnectedPlayer(clientId, peer))
+                if (MultiplayerSession.UnregisterClient(clientId, null, peer))
                 {
                     DebugConsole.Log("[LiteNetLibServer] Player " + clientId + " disconnected. Reason: " + disconnectInfo.Reason);
                 }
@@ -281,8 +257,7 @@ namespace ONI_Together.Networking.Transport.Lan
 
             while (_incomingPackets.TryDequeue(out var _)) { }
 
-            MultiplayerSession.HostUserID = Utils.NilUlong();
-            MultiplayerSession.InActiveSession = false;
+            MultiplayerSession.UnRegisterAsHost(null);
 
             DebugConsole.Log("[LiteNetLibServer] Server stopped.");
         }
@@ -299,6 +274,8 @@ namespace ONI_Together.Networking.Transport.Lan
             _clientIdByPeerId.Clear();
             ClientList.Clear();
             ClientList.Add(NetworkConfig.GetLocalID());
+
+            MultiplayerSession.UnRegisterAsHost(null);
         }
 
         public override void Update()
@@ -340,7 +317,7 @@ namespace ONI_Together.Networking.Transport.Lan
                 _peersByClientId.Remove(clientId);
                 _clientIdByPeerId.Remove(peer.Id);
                 ClientList.Remove(clientId);
-                MultiplayerSession.RemoveConnectedPlayer(clientId, peer);
+                MultiplayerSession.UnregisterClient(clientId, null, peer);
                 DebugConsole.Log("[LiteNetLibServer] Kicked client: " + clientId);
             }
         }
